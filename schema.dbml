@@ -1,0 +1,86 @@
+Enum "enum_users_role" {
+  "super_admin"
+  "shop_admin"
+  "customer"
+}
+
+Table "SequelizeMeta" {
+  "name" varchar(255) [pk, not null]
+}
+
+Table "users" {
+  "id" int4 [pk, not null, increment]
+  "name" varchar(100) [not null]
+  "email" varchar(255) [unique, not null]
+  "passwordHash" varchar(255) [not null]
+  "phone" varchar(20)
+  "role" enum_users_role [not null, default: 'customer']
+  "isActive" bool [not null, default: true]
+  "createdAt" timestamptz [not null, default: `CURRENT_TIMESTAMP`]
+  "updatedAt" timestamptz [not null, default: `CURRENT_TIMESTAMP`]
+
+  Indexes {
+    role [type: btree, name: "users_role"]
+  }
+}
+
+Table "shops" {
+  "id" int4 [pk, not null, increment]
+  "ownerId" int4 [not null]
+  "name" varchar(150) [not null]
+  "slug" varchar(180) [unique, not null]
+  "description" text
+  "category" varchar(50) [not null]
+  "address" varchar(255) [not null]
+  "city" varchar(100) [not null]
+  "state" varchar(100) [not null]
+  "postalCode" varchar(20) [not null]
+  "latitude" numeric(10,7) [not null]
+  "longitude" numeric(10,7) [not null]
+  "phone" varchar(20)
+  "email" varchar(255)
+  "rating" numeric(3,2) [not null, default: 0]
+  "reviewCount" int4 [not null, default: 0]
+  "isVerified" bool [not null, default: false]
+  "isOpen" bool [not null, default: true]
+  "openingHours" jsonb
+  "bannerUrl" varchar(500)
+  "logoUrl" varchar(500)
+  "createdAt" timestamptz [not null, default: `CURRENT_TIMESTAMP`]
+  "updatedAt" timestamptz [not null, default: `CURRENT_TIMESTAMP`]
+
+  Indexes {
+    category [type: btree, name: "shops_category"]
+    city [type: btree, name: "shops_city"]
+    (latitude, longitude) [type: btree, name: "shops_latitude_longitude"]
+    ownerId [type: btree, name: "shops_owner_id"]
+  }
+}
+
+Table "products" {
+  "id" int4 [pk, not null, increment]
+  "shopId" int4 [not null]
+  "name" varchar(200) [not null]
+  "slug" varchar(220) [not null]
+  "description" text
+  "category" varchar(50) [not null]
+  "price" numeric(10,2) [not null]
+  "discountPrice" numeric(10,2)
+  "stockQuantity" int4 [not null, default: 0]
+  "sku" varchar(100)
+  "images" jsonb [not null, default: `[]`]
+  "isAvailable" bool [not null, default: true]
+  "createdAt" timestamptz [not null, default: `CURRENT_TIMESTAMP`]
+  "updatedAt" timestamptz [not null, default: `CURRENT_TIMESTAMP`]
+
+  Indexes {
+    category [type: btree, name: "products_category"]
+    isAvailable [type: btree, name: "products_is_available"]
+    shopId [type: btree, name: "products_shop_id"]
+    (shopId, slug) [type: btree, name: "products_shop_id_slug"]
+  }
+}
+
+Ref "products_shopId_fkey":"shops"."id" <? "products"."shopId" [update: cascade, delete: cascade]
+
+Ref "shops_ownerId_fkey":"users"."id" <? "shops"."ownerId" [update: cascade, delete: restrict]

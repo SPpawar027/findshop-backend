@@ -1,0 +1,46 @@
+import express from "express";
+import cors from "cors";
+import { authRouter } from "./modules/auth/auth.routes";
+import { userRouter } from "./modules/users/user.routes";
+import { shopRouter } from "./modules/shops/shop.routes";
+import { productRouter } from "./modules/products/product.routes";
+import { uploadRouter } from "./modules/upload/upload.routes";
+import { requestLogger } from "./core/middlewares/requestLogger";
+import { errorHandler } from "./core/middlewares/errorHandler";
+import { NotFoundError } from "./core/errors/AppError";
+
+export function createApp(): express.Application {
+  const app = express();
+
+  // Global Middlewares
+  app.use(cors());
+  app.use(express.json());
+  app.use(requestLogger);
+
+  // Health check
+  app.get("/api/health", (_req, res) => {
+    res.json({
+      success: true,
+      message: "FindShopEasily backend is running",
+      timestamp: new Date().toISOString(),
+    });
+  });
+
+  // Feature Module Routes
+  app.use("/api/auth", authRouter);
+  app.use("/api/users", userRouter);
+  app.use("/api/shops", shopRouter);
+  app.use("/api/products", productRouter);
+  app.use("/api/upload", uploadRouter);
+
+  // 404 handler for unknown routes
+  app.use((_req, _res, next) => {
+    next(new NotFoundError("API endpoint not found"));
+  });
+
+  // Centralized Error Handling Middleware
+  app.use(errorHandler);
+
+  return app;
+}
+

@@ -1,0 +1,109 @@
+import type { Request, Response, NextFunction } from "express";
+import { shopService } from "./shop.service";
+import { sendSuccess, sendCreated } from "../../core/utils/response";
+import { BadRequestError } from "../../core/errors/AppError";
+import { formatMediaUrls } from "../../core/utils/media";
+
+export class ShopController {
+  async getAll(req: Request, res: Response, next: NextFunction): Promise<void> {
+    try {
+      const result = await shopService.findAll(req.query);
+      const formattedShops = result.shops.map((s) => formatMediaUrls(s));
+      sendSuccess(res, formattedShops, "Shops fetched successfully", 200, result.meta);
+    } catch (error) {
+      next(error);
+    }
+  }
+
+  async getById(req: Request, res: Response, next: NextFunction): Promise<void> {
+    try {
+      const id = Number(req.params.id);
+      if (isNaN(id)) {
+        throw new BadRequestError("Invalid shop ID");
+      }
+      const shop = await shopService.findById(id);
+      sendSuccess(res, formatMediaUrls(shop), "Shop fetched successfully");
+    } catch (error) {
+      next(error);
+    }
+  }
+
+  async getBySlug(req: Request, res: Response, next: NextFunction): Promise<void> {
+    try {
+      const slug = Array.isArray(req.params.slug) ? req.params.slug[0] : req.params.slug;
+      if (!slug) {
+        throw new BadRequestError("Slug parameter is required");
+      }
+      const shop = await shopService.findBySlug(slug);
+      sendSuccess(res, formatMediaUrls(shop), "Shop fetched successfully");
+    } catch (error) {
+      next(error);
+    }
+  }
+
+  async getNearby(req: Request, res: Response, next: NextFunction): Promise<void> {
+    try {
+      const { lat, lng, radius, limit } = req.query;
+      if (!lat || !lng) {
+        throw new BadRequestError("Latitude ('lat') and Longitude ('lng') are required query parameters");
+      }
+
+      const latitude = Number(lat);
+      const longitude = Number(lng);
+
+      if (isNaN(latitude) || isNaN(longitude)) {
+        throw new BadRequestError("Invalid latitude or longitude values");
+      }
+
+      const shops = await shopService.findNearby({
+        latitude,
+        longitude,
+        radiusKm: radius ? Number(radius) : undefined,
+        limit: limit ? Number(limit) : undefined,
+      });
+
+      const formattedShops = shops.map((s) => formatMediaUrls(s));
+      sendSuccess(res, formattedShops, "Nearby shops fetched successfully");
+    } catch (error) {
+      next(error);
+    }
+  }
+
+  async create(req: Request, res: Response, next: NextFunction): Promise<void> {
+    try {
+      const shop = await shopService.create(req.body);
+      sendCreated(res, formatMediaUrls(shop), "Shop created successfully");
+    } catch (error) {
+      next(error);
+    }
+  }
+
+  async update(req: Request, res: Response, next: NextFunction): Promise<void> {
+    try {
+      const id = Number(req.params.id);
+      if (isNaN(id)) {
+        throw new BadRequestError("Invalid shop ID");
+      }
+      const shop = await shopService.update(id, req.body);
+      sendSuccess(res, formatMediaUrls(shop), "Shop updated successfully");
+    } catch (error) {
+      next(error);
+    }
+  }
+
+  async delete(req: Request, res: Response, next: NextFunction): Promise<void> {
+    try {
+      const id = Number(req.params.id);
+      if (isNaN(id)) {
+        throw new BadRequestError("Invalid shop ID");
+      }
+      await shopService.delete(id);
+      sendSuccess(res, null, "Shop deleted successfully");
+    } catch (error) {
+      next(error);
+    }
+  }
+}
+
+export const shopController = new ShopController();
+
