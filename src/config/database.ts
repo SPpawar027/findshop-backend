@@ -11,10 +11,19 @@ const isLocal = !databaseUrl.includes("rds.amazonaws.com") && databaseUrl.includ
 
 export const sequelize = new Sequelize(databaseUrl, {
   dialect: "postgres",
-  logging: process.env.NODE_ENV === "development" ? console.log : false,
+  logging: false,
+  pool: {
+    max: 10,
+    min: 0,
+    acquire: 10000,
+    idle: 10000,
+  },
   dialectOptions: isLocal
-    ? {}
+    ? {
+        connectTimeout: 5000,
+      }
     : {
+        connectTimeout: 5000,
         ssl: {
           require: true,
           rejectUnauthorized: false,

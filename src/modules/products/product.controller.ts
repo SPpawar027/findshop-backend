@@ -28,6 +28,19 @@ export class ProductController {
     }
   }
 
+  async getBySlug(req: Request, res: Response, next: NextFunction): Promise<void> {
+    try {
+      const slug = Array.isArray(req.params.slug) ? req.params.slug[0] : req.params.slug;
+      if (!slug) {
+        throw new BadRequestError("Slug parameter is required");
+      }
+      const product = await productService.findBySlug(slug);
+      sendSuccess(res, formatMediaUrls(product), "Product fetched successfully");
+    } catch (error) {
+      next(error);
+    }
+  }
+
   async getByShop(req: Request, res: Response, next: NextFunction): Promise<void> {
     try {
       const shopId = Number(req.params.shopId);

@@ -38,7 +38,13 @@ import { Product } from "../modules/products/product.model";
  * ============================================================================
  */
 
+let associationsInitialized = false;
+
 export function setupAssociations(): void {
+  if (associationsInitialized) {
+    return;
+  }
+  associationsInitialized = true;
   // --------------------------------------------------------------------------
   // RELATIONSHIP 1: User (Shop Admin) <---- One-to-Many (1:N) ----> Shop
   // --------------------------------------------------------------------------

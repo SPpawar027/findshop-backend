@@ -4,19 +4,28 @@ import { env } from "./config/env";
 
 async function startServer(): Promise<void> {
   try {
+    const isLocal = env.DATABASE_URL.includes("localhost");
+    console.log(`\n========================================`);
+    console.log(` FindShopEasily Backend Starting...`);
+    console.log(` Environment : [${env.NODE_ENV}]`);
+    console.log(` Database Target: ${isLocal ? "Local PostgreSQL (localhost:5432)" : "AWS RDS Cloud Database"}`);
+    console.log(`========================================\n`);
+
+    console.log("Connecting to PostgreSQL...");
     // Verify database connection and models
     await sequelize.authenticate();
-    console.log("PostgreSQL connection established successfully.");
+    console.log("✅ PostgreSQL connection established successfully.");
 
     const app = createApp();
 
     const server = app.listen(env.PORT, () => {
-      console.log(`FindShopEasily Backend running on http://localhost:${env.PORT} [${env.NODE_ENV}]`);
+      console.log(`🚀 FindShopEasily Backend running on http://localhost:${env.PORT} [${env.NODE_ENV}]`);
+      console.log(`📡 Health Check URL: http://localhost:${env.PORT}/api/health\n`);
     });
 
     // Graceful shutdown
     const shutdown = async (signal: string) => {
-      console.log(`Received ${signal}. Shutting down gracefully...`);
+      console.log(`\nReceived ${signal}. Shutting down gracefully...`);
       server.close(async () => {
         await sequelize.close();
         console.log("Database connection closed. Exiting process.");
@@ -27,7 +36,8 @@ async function startServer(): Promise<void> {
     process.on("SIGINT", () => void shutdown("SIGINT"));
     process.on("SIGTERM", () => void shutdown("SIGTERM"));
   } catch (error) {
-    console.error("Unable to start backend:", error);
+    console.error("\n❌ Unable to start backend server!");
+    console.error("Error Details:", error);
     process.exitCode = 1;
   }
 }

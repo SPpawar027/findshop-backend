@@ -1,5 +1,6 @@
 import { Op } from "sequelize";
 import { Product } from "./product.model";
+import { Shop } from "../shops/shop.model";
 import { NotFoundError } from "../../core/errors/AppError";
 import { storageService } from "../../core/storage/storage.service";
 
@@ -81,9 +82,76 @@ export class ProductService {
   }
 
   async findById(id: number): Promise<Product> {
-    const product = await Product.findByPk(id);
+    const product = await Product.findByPk(id, {
+      include: [
+        {
+          model: Shop,
+          as: "shop",
+          attributes: [
+            "id",
+            "ownerId",
+            "name",
+            "slug",
+            "category",
+            "address",
+            "city",
+            "state",
+            "postalCode",
+            "latitude",
+            "longitude",
+            "phone",
+            "email",
+            "rating",
+            "reviewCount",
+            "isVerified",
+            "isOpen",
+            "openingHours",
+            "bannerUrl",
+            "logoUrl",
+          ],
+        },
+      ],
+    });
     if (!product) {
       throw new NotFoundError(`Product with id ${id} not found`);
+    }
+    return product;
+  }
+
+  async findBySlug(slug: string): Promise<Product> {
+    const product = await Product.findOne({
+      where: { slug },
+      include: [
+        {
+          model: Shop,
+          as: "shop",
+          attributes: [
+            "id",
+            "ownerId",
+            "name",
+            "slug",
+            "category",
+            "address",
+            "city",
+            "state",
+            "postalCode",
+            "latitude",
+            "longitude",
+            "phone",
+            "email",
+            "rating",
+            "reviewCount",
+            "isVerified",
+            "isOpen",
+            "openingHours",
+            "bannerUrl",
+            "logoUrl",
+          ],
+        },
+      ],
+    });
+    if (!product) {
+      throw new NotFoundError(`Product with slug '${slug}' not found`);
     }
     return product;
   }

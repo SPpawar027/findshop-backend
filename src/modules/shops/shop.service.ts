@@ -1,5 +1,7 @@
 import { Op, literal } from "sequelize";
 import { Shop } from "./shop.model";
+import { User } from "../users/user.model";
+import { Product } from "../products/product.model";
 import { NotFoundError } from "../../core/errors/AppError";
 
 export interface ListShopsQuery {
@@ -78,7 +80,32 @@ export class ShopService {
   }
 
   async findById(id: number): Promise<Shop> {
-    const shop = await Shop.findByPk(id);
+    const shop = await Shop.findByPk(id, {
+      include: [
+        {
+          model: User,
+          as: "owner",
+          attributes: ["id", "name", "email", "phone", "role"],
+        },
+        {
+          model: Product,
+          as: "products",
+          attributes: [
+            "id",
+            "name",
+            "slug",
+            "description",
+            "price",
+            "discountPrice",
+            "images",
+            "category",
+            "isAvailable",
+            "stockQuantity",
+            "sku",
+          ],
+        },
+      ],
+    });
     if (!shop) {
       throw new NotFoundError(`Shop with id ${id} not found`);
     }
@@ -86,7 +113,33 @@ export class ShopService {
   }
 
   async findBySlug(slug: string): Promise<Shop> {
-    const shop = await Shop.findOne({ where: { slug } });
+    const shop = await Shop.findOne({
+      where: { slug },
+      include: [
+        {
+          model: User,
+          as: "owner",
+          attributes: ["id", "name", "email", "phone", "role"],
+        },
+        {
+          model: Product,
+          as: "products",
+          attributes: [
+            "id",
+            "name",
+            "slug",
+            "description",
+            "price",
+            "discountPrice",
+            "images",
+            "category",
+            "isAvailable",
+            "stockQuantity",
+            "sku",
+          ],
+        },
+      ],
+    });
     if (!shop) {
       throw new NotFoundError(`Shop with slug '${slug}' not found`);
     }
