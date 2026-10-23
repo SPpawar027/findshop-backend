@@ -780,6 +780,9 @@ export async function runSeed() {
       },
     ];
 
+    // Ensure table exists even if migrations were pending
+    await LegalDocument.sync();
+
     for (const doc of legalDocs) {
       let existing = await LegalDocument.findByPk(doc.id);
       if (!existing) {
