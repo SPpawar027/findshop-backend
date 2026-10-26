@@ -7,7 +7,15 @@ import { formatMediaUrls } from "../../core/utils/media";
 export class ProductController {
   async getAll(req: Request, res: Response, next: NextFunction): Promise<void> {
     try {
-      const result = await productService.findAll(req.query);
+      const query = {
+        ...req.query,
+        lat: req.query.lat !== undefined ? Number(req.query.lat) : undefined,
+        lng: req.query.lng !== undefined ? Number(req.query.lng) : undefined,
+        radiusKm: req.query.radius !== undefined
+          ? Number(req.query.radius)
+          : (req.query.radiusKm !== undefined ? Number(req.query.radiusKm) : undefined),
+      };
+      const result = await productService.findAll(query);
       const formattedProducts = result.products.map((p) => formatMediaUrls(p));
       sendSuccess(res, formattedProducts, "Products fetched successfully", 200, result.meta);
     } catch (error) {

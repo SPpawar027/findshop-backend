@@ -7,7 +7,15 @@ import { formatMediaUrls } from "../../core/utils/media";
 export class ShopController {
   async getAll(req: Request, res: Response, next: NextFunction): Promise<void> {
     try {
-      const result = await shopService.findAll(req.query);
+      const query = {
+        ...req.query,
+        lat: req.query.lat !== undefined ? Number(req.query.lat) : undefined,
+        lng: req.query.lng !== undefined ? Number(req.query.lng) : undefined,
+        radiusKm: req.query.radius !== undefined
+          ? Number(req.query.radius)
+          : (req.query.radiusKm !== undefined ? Number(req.query.radiusKm) : undefined),
+      };
+      const result = await shopService.findAll(query);
       const formattedShops = result.shops.map((s) => formatMediaUrls(s));
       sendSuccess(res, formattedShops, "Shops fetched successfully", 200, result.meta);
     } catch (error) {

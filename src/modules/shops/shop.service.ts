@@ -10,6 +10,9 @@ export interface ListShopsQuery {
   search?: string;
   page?: number;
   limit?: number;
+  lat?: number;
+  lng?: number;
+  radiusKm?: number;
 }
 
 export interface NearbyShopsQuery {
@@ -61,11 +64,53 @@ export class ShopService {
       ];
     }
 
+    let attributes: any = undefined;
+    let order: any = [["rating", "DESC"], ["createdAt", "DESC"]];
+
+    const hasLocation =
+      query.lat !== undefined &&
+      query.lng !== undefined &&
+      !isNaN(Number(query.lat)) &&
+      !isNaN(Number(query.lng));
+
+    if (hasLocation) {
+      const lat = Number(query.lat);
+      const lng = Number(query.lng);
+      const distanceLiteral = literal(`
+        (6371 * acos(
+          least(1.0, greatest(-1.0,
+            cos(radians(${lat})) * cos(radians(latitude)) *
+            cos(radians(longitude) - radians(${lng})) +
+            sin(radians(${lat})) * sin(radians(latitude))
+          ))
+        ))
+      `);
+      attributes = {
+        include: [[distanceLiteral, "distanceKm"]],
+      };
+
+      if (query.radiusKm && !isNaN(Number(query.radiusKm))) {
+        const radius = Number(query.radiusKm);
+        where[Op.and as unknown as string] = literal(`
+          (6371 * acos(
+            least(1.0, greatest(-1.0,
+              cos(radians(${lat})) * cos(radians(latitude)) *
+              cos(radians(longitude) - radians(${lng})) +
+              sin(radians(${lat})) * sin(radians(latitude))
+            ))
+          )) <= ${radius}
+        `);
+      }
+
+      order = literal(`"distanceKm" ASC`);
+    }
+
     const { count, rows } = await Shop.findAndCountAll({
       where,
+      attributes,
       limit,
       offset,
-      order: [["rating", "DESC"], ["createdAt", "DESC"]],
+      order,
     });
 
     return {

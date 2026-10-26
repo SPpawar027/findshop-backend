@@ -1,4 +1,4 @@
-import { Op } from "sequelize";
+import { Op, literal } from "sequelize";
 import { Product } from "./product.model";
 import { Shop } from "../shops/shop.model";
 import { NotFoundError } from "../../core/errors/AppError";
@@ -13,6 +13,9 @@ export interface ListProductsQuery {
   isAvailable?: boolean;
   page?: number;
   limit?: number;
+  lat?: number;
+  lng?: number;
+  radiusKm?: number;
 }
 
 export interface CreateProductInput {
@@ -63,8 +66,64 @@ export class ProductService {
       ];
     }
 
+    const shopInclude: any = {
+      model: Shop,
+      as: "shop",
+      attributes: [
+        "id",
+        "name",
+        "slug",
+        "category",
+        "address",
+        "city",
+        "latitude",
+        "longitude",
+        "rating",
+        "reviewCount",
+        "isVerified",
+        "isOpen",
+        "bannerUrl",
+        "logoUrl",
+      ],
+    };
+
+    const hasLocation =
+      query.lat !== undefined &&
+      query.lng !== undefined &&
+      !isNaN(Number(query.lat)) &&
+      !isNaN(Number(query.lng));
+
+    if (hasLocation) {
+      const lat = Number(query.lat);
+      const lng = Number(query.lng);
+      const distanceLiteral = literal(`
+        (6371 * acos(
+          least(1.0, greatest(-1.0,
+            cos(radians(${lat})) * cos(radians("shop"."latitude")) *
+            cos(radians("shop"."longitude") - radians(${lng})) +
+            sin(radians(${lat})) * sin(radians("shop"."latitude"))
+          ))
+        ))
+      `);
+      shopInclude.attributes.push([distanceLiteral, "distanceKm"]);
+
+      if (query.radiusKm && !isNaN(Number(query.radiusKm))) {
+        const radius = Number(query.radiusKm);
+        shopInclude.where = literal(`
+          (6371 * acos(
+            least(1.0, greatest(-1.0,
+              cos(radians(${lat})) * cos(radians("shop"."latitude")) *
+              cos(radians("shop"."longitude") - radians(${lng})) +
+              sin(radians(${lat})) * sin(radians("shop"."latitude"))
+            ))
+          )) <= ${radius}
+        `);
+      }
+    }
+
     const { count, rows } = await Product.findAndCountAll({
       where,
+      include: [shopInclude],
       limit,
       offset,
       order: [["createdAt", "DESC"]],
