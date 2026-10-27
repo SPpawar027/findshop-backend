@@ -9,7 +9,8 @@
     "dev:local": "DOTENV_CONFIG_PATH=.env.local tsx watch -r dotenv/config src/server.ts",
     "dev:development": "DOTENV_CONFIG_PATH=.env.development tsx watch -r dotenv/config src/server.ts",
     "dev:prod": "DOTENV_CONFIG_PATH=.env.production tsx watch -r dotenv/config src/server.ts",
-    "build": "tsc",
+    "prebuild": "node scripts/generate-build-info.js",
+    "build": "tsc && cp src/build-info.json dist/ 2>/dev/null || true",
     "seed": "tsx src/database/seed.ts",
     "start": "node dist/server.js",
     "test": "echo \"Error: no test specified\" && exit 1"

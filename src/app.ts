@@ -12,6 +12,8 @@ import { requestLogger } from "./core/middlewares/requestLogger";
 import { errorHandler } from "./core/middlewares/errorHandler";
 import { NotFoundError } from "./core/errors/AppError";
 
+import { getSystemHealthAndInfo } from "./core/utils/systemInfo";
+
 export function createApp(): express.Application {
   const app = express();
 
@@ -28,6 +30,22 @@ export function createApp(): express.Application {
       timestamp: new Date().toISOString(),
     });
   });
+
+  // Know Backend & Deployment Details (/knowbackend and /api/knowbackend)
+  const handleKnowBackend = async (_req: express.Request, res: express.Response) => {
+    try {
+      const info = await getSystemHealthAndInfo();
+      res.json(info);
+    } catch (err: any) {
+      res.status(500).json({
+        success: false,
+        message: err?.message || "Failed to inspect backend status",
+      });
+    }
+  };
+
+  app.get("/knowbackend", handleKnowBackend);
+  app.get("/api/knowbackend", handleKnowBackend);
 
   // Feature Module Routes
   app.use("/api/auth", authRouter);

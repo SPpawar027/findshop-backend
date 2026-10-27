@@ -6,6 +6,7 @@ node_modules/
 # Production Build Output
 dist/
 build/
+src/build-info.json
 
 # Environment Variables & Secrets (NEVER COMMIT)
 .env
