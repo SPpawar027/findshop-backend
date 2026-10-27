@@ -37,8 +37,9 @@ export class LegalController {
         throw new BadRequestError("Document type is required");
       }
 
-      const { title, content, version } = req.body;
-      if (!content || typeof content !== "string" || content.trim().length === 0) {
+      const { title, version } = req.body;
+      const rawContent = req.body.contentHtml || req.body.content;
+      if (!rawContent || typeof rawContent !== "string" || rawContent.trim().length === 0) {
         throw new BadRequestError("Document content cannot be empty");
       }
 
@@ -46,7 +47,8 @@ export class LegalController {
 
       const doc = await legalService.updateLegalDoc(type, {
         title,
-        content,
+        content: rawContent,
+        contentHtml: rawContent,
         version,
         lastUpdatedBy: adminUser,
       });
