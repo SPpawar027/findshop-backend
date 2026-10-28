@@ -23,13 +23,60 @@ export class ShopController {
     }
   }
 
+  async getDetail(req: Request, res: Response, next: NextFunction): Promise<void> {
+    try {
+      const rawIdentifier = req.params.identifier || req.params.id || req.params.slug;
+      const identifier = Array.isArray(rawIdentifier) ? rawIdentifier[0] : rawIdentifier;
+      if (!identifier) {
+        throw new BadRequestError("Shop identifier (ID or slug) is required");
+      }
+
+      const query = {
+        lat: req.query.lat !== undefined ? Number(req.query.lat) : undefined,
+        lng: req.query.lng !== undefined ? Number(req.query.lng) : undefined,
+        category: typeof req.query.category === "string" ? req.query.category : undefined,
+        productSearch:
+          typeof req.query.productSearch === "string"
+            ? req.query.productSearch
+            : typeof req.query.search === "string"
+            ? req.query.search
+            : undefined,
+        availableOnly: req.query.availableOnly === "true",
+        productsLimit: req.query.productsLimit ? Number(req.query.productsLimit) : undefined,
+        productsPage: req.query.productsPage ? Number(req.query.productsPage) : undefined,
+      };
+
+      const shop = await shopService.getDetail(identifier, query);
+      sendSuccess(res, formatMediaUrls(shop), "Shop detail fetched successfully");
+    } catch (error) {
+      next(error);
+    }
+  }
+
   async getById(req: Request, res: Response, next: NextFunction): Promise<void> {
     try {
-      const id = Number(req.params.id);
-      if (isNaN(id)) {
-        throw new BadRequestError("Invalid shop ID");
+      const rawId = req.params.id;
+      const id = Array.isArray(rawId) ? rawId[0] : rawId;
+      if (!id) {
+        throw new BadRequestError("Shop ID is required");
       }
-      const shop = await shopService.findById(id);
+
+      const query = {
+        lat: req.query.lat !== undefined ? Number(req.query.lat) : undefined,
+        lng: req.query.lng !== undefined ? Number(req.query.lng) : undefined,
+        category: typeof req.query.category === "string" ? req.query.category : undefined,
+        productSearch:
+          typeof req.query.productSearch === "string"
+            ? req.query.productSearch
+            : typeof req.query.search === "string"
+            ? req.query.search
+            : undefined,
+        availableOnly: req.query.availableOnly === "true",
+        productsLimit: req.query.productsLimit ? Number(req.query.productsLimit) : undefined,
+        productsPage: req.query.productsPage ? Number(req.query.productsPage) : undefined,
+      };
+
+      const shop = await shopService.getDetail(id, query);
       sendSuccess(res, formatMediaUrls(shop), "Shop fetched successfully");
     } catch (error) {
       next(error);
@@ -42,7 +89,23 @@ export class ShopController {
       if (!slug) {
         throw new BadRequestError("Slug parameter is required");
       }
-      const shop = await shopService.findBySlug(slug);
+
+      const query = {
+        lat: req.query.lat !== undefined ? Number(req.query.lat) : undefined,
+        lng: req.query.lng !== undefined ? Number(req.query.lng) : undefined,
+        category: typeof req.query.category === "string" ? req.query.category : undefined,
+        productSearch:
+          typeof req.query.productSearch === "string"
+            ? req.query.productSearch
+            : typeof req.query.search === "string"
+            ? req.query.search
+            : undefined,
+        availableOnly: req.query.availableOnly === "true",
+        productsLimit: req.query.productsLimit ? Number(req.query.productsLimit) : undefined,
+        productsPage: req.query.productsPage ? Number(req.query.productsPage) : undefined,
+      };
+
+      const shop = await shopService.getDetail(slug, query);
       sendSuccess(res, formatMediaUrls(shop), "Shop fetched successfully");
     } catch (error) {
       next(error);

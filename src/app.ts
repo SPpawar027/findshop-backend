@@ -1,5 +1,6 @@
 import express from "express";
 import cors from "cors";
+import "./database";
 import { authRouter } from "./modules/auth/auth.routes";
 import { userRouter } from "./modules/users/user.routes";
 import { shopRouter } from "./modules/shops/shop.routes";

@@ -134,8 +134,10 @@ npm run build
 ### Stores & Shops (`/api/shops`)
 - `GET /api/shops` – List all shops with pagination, search, category, and status filters.
 - `GET /api/shops/nearby?lat=...&lng=...&radius=...` – Geospatial proximity search sorted by distance.
-- `GET /api/shops/:id` – Retrieve complete shop profile by ID.
-- `GET /api/shops/slug/:slug` – Retrieve shop profile by SEO slug.
+- `GET /api/shops/detail/:identifier` – **Enriched Shop Detail API**: Retrieve full storefront details by numeric ID or SEO slug, including live open/closed status, weekly schedule, geospatial Haversine distance (`?lat=...&lng=...`), catalog categories breakdown, amenities, and action links.
+- `GET /api/shops/:id/detail` – Alias for shop detail by ID/slug.
+- `GET /api/shops/:id` – Retrieve complete shop profile by ID (or slug) with full detail payload.
+- `GET /api/shops/slug/:slug` – Retrieve complete shop profile by SEO slug with full detail payload.
 - `POST /api/shops` – Onboard a new store.
 - `PUT /api/shops/:id` – Update store profile, open/close status, or verification state.
 - `DELETE /api/shops/:id` – Delete or archive a shop.

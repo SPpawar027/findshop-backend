@@ -3,6 +3,18 @@ import { Shop } from "./shop.model";
 import { User } from "../users/user.model";
 import { Product } from "../products/product.model";
 import { NotFoundError } from "../../core/errors/AppError";
+import {
+  calculateHaversineDistance,
+  formatDistance,
+  calculateShopOpenStatus,
+  buildWeeklySchedule,
+  generateRatingSummary,
+  getStandardShopAmenities,
+  ShopOpenStatusResult,
+  DayScheduleItem,
+  ShopAmenityItem,
+  RatingSummaryResult,
+} from "./shop.helper";
 
 export interface ListShopsQuery {
   category?: string;
@@ -39,6 +51,69 @@ export interface CreateShopInput {
   openingHours?: Record<string, unknown> | null;
   bannerUrl?: string | null;
   logoUrl?: string | null;
+}
+
+export interface ShopDetailQuery {
+  lat?: number;
+  lng?: number;
+  category?: string;
+  productSearch?: string;
+  availableOnly?: boolean;
+  productsLimit?: number;
+  productsPage?: number;
+}
+
+export interface ShopDetailResponse {
+  id: number;
+  ownerId: number;
+  name: string;
+  slug: string;
+  description: string | null;
+  category: string;
+  address: string;
+  city: string;
+  state: string;
+  postalCode: string;
+  latitude: number;
+  longitude: number;
+  phone: string | null;
+  email: string | null;
+  rating: number;
+  reviewCount: number;
+  isVerified: boolean;
+  isOpen: boolean;
+  openingHours: Record<string, unknown> | null;
+  bannerUrl: string | null;
+  logoUrl: string | null;
+  createdAt: Date;
+  updatedAt: Date;
+
+  // Enriched dynamic properties
+  distanceKm?: number;
+  distanceFormatted?: string;
+  galleryImages: string[];
+  openStatus: ShopOpenStatusResult;
+  weeklySchedule: DayScheduleItem[];
+  amenities: ShopAmenityItem[];
+  paymentMethods: string[];
+  actionLinks: {
+    directionsUrl: string;
+    phoneCallUri: string | null;
+    shareUrl: string;
+  };
+  ratingSummary: RatingSummaryResult;
+
+  // Associations & catalog summary
+  owner?: {
+    id: number;
+    name: string;
+    email: string;
+    phone: string | null;
+    role: string;
+  };
+  products: any[];
+  productCategories: string[];
+  totalProductsCount: number;
 }
 
 export class ShopService {
@@ -124,71 +199,169 @@ export class ShopService {
     };
   }
 
-  async findById(id: number): Promise<Shop> {
-    const shop = await Shop.findByPk(id, {
-      include: [
-        {
-          model: User,
-          as: "owner",
-          attributes: ["id", "name", "email", "phone", "role"],
-        },
-        {
-          model: Product,
-          as: "products",
-          attributes: [
-            "id",
-            "name",
-            "slug",
-            "description",
-            "price",
-            "discountPrice",
-            "images",
-            "category",
-            "isAvailable",
-            "stockQuantity",
-            "sku",
-          ],
-        },
-      ],
-    });
-    if (!shop) {
-      throw new NotFoundError(`Shop with id ${id} not found`);
+  async getDetail(identifier: string | number, query: ShopDetailQuery = {}): Promise<ShopDetailResponse> {
+    const isNum =
+      typeof identifier === "number" ||
+      (!isNaN(Number(identifier)) && !isNaN(parseFloat(String(identifier))));
+
+    let shop: Shop | null = null;
+
+    const baseInclude = [
+      {
+        model: User,
+        as: "owner",
+        attributes: ["id", "name", "email", "phone", "role"],
+      },
+    ];
+
+    if (isNum) {
+      shop = await Shop.findByPk(Number(identifier), { include: baseInclude });
+    } else {
+      const raw = String(identifier).trim();
+      shop = await Shop.findOne({ where: { slug: raw }, include: baseInclude });
+
+      // Fallback: check if slug has "shop-" prefix stripped or as numeric id
+      if (!shop && raw.startsWith("shop-")) {
+        const stripped = raw.replace(/^shop-/, "");
+        if (!isNaN(Number(stripped))) {
+          shop = await Shop.findByPk(Number(stripped), { include: baseInclude });
+        } else {
+          shop = await Shop.findOne({ where: { slug: stripped }, include: baseInclude });
+        }
+      }
     }
-    return shop;
+
+    if (!shop) {
+      throw new NotFoundError(`Shop '${identifier}' not found`);
+    }
+
+    // 1. Fetch filtered products for this shop and gather catalog categories
+    const productWhere: Record<string, unknown> = {
+      shopId: shop.id,
+    };
+
+    if (query.availableOnly) {
+      productWhere.isAvailable = true;
+    }
+
+    if (query.category && query.category !== "ALL") {
+      productWhere.category = query.category;
+    }
+
+    if (query.productSearch) {
+      productWhere[Op.or as unknown as string] = [
+        { name: { [Op.iLike]: `%${query.productSearch}%` } },
+        { description: { [Op.iLike]: `%${query.productSearch}%` } },
+      ];
+    }
+
+    const productsLimit = Math.min(100, Math.max(1, Number(query.productsLimit || 50)));
+    const productsPage = Math.max(1, Number(query.productsPage || 1));
+    const productsOffset = (productsPage - 1) * productsLimit;
+
+    const [filteredProducts, allShopProducts] = await Promise.all([
+      Product.findAll({
+        where: productWhere,
+        order: [["createdAt", "DESC"]],
+        limit: productsLimit,
+        offset: productsOffset,
+      }),
+      Product.findAll({
+        where: { shopId: shop.id },
+        attributes: ["category"],
+      }),
+    ]);
+
+    // Compute distinct product categories
+    const categorySet = new Set<string>();
+    allShopProducts.forEach((p) => {
+      if (p.category) categorySet.add(p.category);
+    });
+    const productCategories = ["ALL", ...Array.from(categorySet).sort()];
+
+    // 2. Geospatial distance calculation
+    let distanceKm: number | undefined;
+    let distanceFormatted: string | undefined;
+
+    if (
+      query.lat !== undefined &&
+      query.lng !== undefined &&
+      !isNaN(Number(query.lat)) &&
+      !isNaN(Number(query.lng))
+    ) {
+      const userLat = Number(query.lat);
+      const userLng = Number(query.lng);
+      distanceKm = calculateHaversineDistance(
+        userLat,
+        userLng,
+        Number(shop.latitude),
+        Number(shop.longitude)
+      );
+      distanceFormatted = formatDistance(distanceKm);
+    }
+
+    // 3. Dynamic open status & weekly schedule
+    const openStatus = calculateShopOpenStatus(shop.openingHours, shop.isOpen);
+    const weeklySchedule = buildWeeklySchedule(shop.openingHours);
+
+    // 4. Rating summary curve
+    const ratingSummary = generateRatingSummary(shop.rating, shop.reviewCount);
+
+    // 5. Storefront amenities & payment methods
+    const amenities = getStandardShopAmenities(shop.category);
+    const paymentMethods = ["UPI", "Cash", "Credit / Debit Cards", "Net Banking"];
+
+    // 6. Action Links
+    const directionsUrl = `https://www.google.com/maps/dir/?api=1&destination=${shop.latitude},${shop.longitude}`;
+    const phoneCallUri = shop.phone ? `tel:${shop.phone}` : null;
+    const shareUrl = `https://findshopeasily.com/shop/${shop.slug}`;
+
+    // 7. Gallery Images (banner + top product photos)
+    const productImages = filteredProducts.flatMap((p) =>
+      Array.isArray(p.images) ? p.images : []
+    );
+    const galleryImages = Array.from(
+      new Set([shop.bannerUrl, ...productImages].filter(Boolean) as string[])
+    );
+
+    const shopJson = shop.toJSON();
+
+    return {
+      ...shopJson,
+      distanceKm,
+      distanceFormatted,
+      openStatus,
+      weeklySchedule,
+      amenities,
+      paymentMethods,
+      actionLinks: {
+        directionsUrl,
+        phoneCallUri,
+        shareUrl,
+      },
+      ratingSummary,
+      galleryImages,
+      owner: shop.owner
+        ? {
+            id: shop.owner.id,
+            name: shop.owner.name,
+            email: shop.owner.email,
+            phone: shop.owner.phone,
+            role: shop.owner.role,
+          }
+        : undefined,
+      products: filteredProducts.map((p) => p.toJSON()),
+      productCategories,
+      totalProductsCount: allShopProducts.length,
+    };
   }
 
-  async findBySlug(slug: string): Promise<Shop> {
-    const shop = await Shop.findOne({
-      where: { slug },
-      include: [
-        {
-          model: User,
-          as: "owner",
-          attributes: ["id", "name", "email", "phone", "role"],
-        },
-        {
-          model: Product,
-          as: "products",
-          attributes: [
-            "id",
-            "name",
-            "slug",
-            "description",
-            "price",
-            "discountPrice",
-            "images",
-            "category",
-            "isAvailable",
-            "stockQuantity",
-            "sku",
-          ],
-        },
-      ],
-    });
-    if (!shop) {
-      throw new NotFoundError(`Shop with slug '${slug}' not found`);
-    }
-    return shop;
+  async findById(id: number, query: ShopDetailQuery = {}): Promise<ShopDetailResponse> {
+    return this.getDetail(id, query);
+  }
+
+  async findBySlug(slug: string, query: ShopDetailQuery = {}): Promise<ShopDetailResponse> {
+    return this.getDetail(slug, query);
   }
 
   async findNearby({ latitude, longitude, radiusKm = 10, limit = 20 }: NearbyShopsQuery) {
