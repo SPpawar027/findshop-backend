@@ -95,30 +95,87 @@ export class LocationService {
           ? (localityInfo.administrative as Array<Record<string, unknown>>)
           : [];
 
-        // Extract district or division
+        // 1. State
+        const stateObj = adminArray.find(
+          (item) =>
+            item.adminLevel === 4 ||
+            (typeof item.description === "string" && item.description.toLowerCase().includes("state"))
+        );
+        const state =
+          (stateObj && typeof stateObj.name === "string" ? stateObj.name : null) ||
+          (data.principalSubdivision as string) ||
+          "Madhya Pradesh";
+
+        // 2. Extract district / urban center (adminLevel 5)
         const districtObj = adminArray.find((item) =>
           typeof item.name === "string" &&
-          (item.name.toLowerCase().includes("district") || item.name.toLowerCase().includes("division"))
+          (item.adminLevel === 5 ||
+            item.name.toLowerCase().includes("district") ||
+            item.name.toLowerCase().includes("division") ||
+            (typeof item.description === "string" && item.description.toLowerCase().includes("district")))
         );
         const districtName = districtObj && typeof districtObj.name === "string"
-          ? districtObj.name.replace(/district/gi, "").trim()
+          ? districtObj.name.replace(/\s+(district|division)/gi, "").trim()
           : "";
 
-        const city =
-          (data.city as string) ||
-          districtName ||
-          (data.principalSubdivision as string) ||
-          "Indore";
+        // 3. Sub-district / Tehsil (adminLevel 6)
+        const subDistrictObj = adminArray.find((item) => item.adminLevel === 6);
+        const subDistrictName =
+          subDistrictObj && typeof subDistrictObj.name === "string"
+            ? subDistrictObj.name.trim()
+            : "";
 
-        const locality =
+        // 4. Granular locality / village / neighborhood (adminLevel >= 7 or highest order)
+        const districtOrder = typeof districtObj?.order === "number" ? districtObj.order : 0;
+        const granularCandidates = adminArray
+          .filter((item) => {
+            if (!item.name || typeof item.name !== "string") return false;
+            const lvl = typeof item.adminLevel === "number" ? item.adminLevel : 0;
+            const ord = typeof item.order === "number" ? item.order : 0;
+            return lvl >= 7 || (lvl > 5 && ord > districtOrder);
+          })
+          .sort((a, b) => {
+            const lvlA = typeof a.adminLevel === "number" ? a.adminLevel : 0;
+            const lvlB = typeof b.adminLevel === "number" ? b.adminLevel : 0;
+            if (lvlB !== lvlA) return lvlB - lvlA;
+            const ordA = typeof a.order === "number" ? a.order : 0;
+            const ordB = typeof b.order === "number" ? b.order : 0;
+            return ordB - ordA;
+          });
+
+        const granularName =
+          granularCandidates[0] && typeof granularCandidates[0].name === "string"
+            ? granularCandidates[0].name.trim()
+            : "";
+
+        // True City
+        let city = districtName || (data.city as string) || (data.principalSubdivision as string) || "Indore";
+        if (districtName && data.city && typeof data.city === "string") {
+          if (subDistrictName && data.city.toLowerCase() === subDistrictName.toLowerCase()) {
+            city = districtName;
+          }
+        }
+
+        // True Locality
+        let locality =
+          granularName ||
+          (subDistrictName && subDistrictName.toLowerCase() !== city.toLowerCase() ? subDistrictName : "") ||
           (data.locality as string) ||
-          (data.city as string) ||
-          districtName ||
+          (data.city && typeof data.city === "string" && data.city.toLowerCase() !== city.toLowerCase() ? data.city : "") ||
           "Nearby Area";
 
-        const state = (data.principalSubdivision as string) || "Madhya Pradesh";
+        if (locality.toLowerCase() === city.toLowerCase()) {
+          if (granularName && granularName.toLowerCase() !== city.toLowerCase()) {
+            locality = granularName;
+          } else if (subDistrictName && subDistrictName.toLowerCase() !== city.toLowerCase()) {
+            locality = subDistrictName;
+          }
+        }
+
         const pincode = typeof data.postcode === "string" && data.postcode ? data.postcode : undefined;
-        const formattedAddress = `${locality}, ${city}, ${state}`;
+        const formattedAddress = locality.toLowerCase() === city.toLowerCase()
+          ? `${locality}, ${state}`
+          : `${locality}, ${city}, ${state}`;
 
         const result: ReverseGeocodeResult = {
           latitude: lat,
