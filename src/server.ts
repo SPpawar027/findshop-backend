@@ -4,11 +4,13 @@ import { env } from "./config/env";
 
 async function startServer(): Promise<void> {
   try {
-    const isLocal = env.DATABASE_URL.includes("localhost");
+    const isLocal = env.DATABASE_URL.includes("localhost") || env.DATABASE_URL.includes("127.0.0.1");
+    const isNeon = env.DATABASE_URL.includes("neon.tech");
+    const dbLabel = isLocal ? "Local PostgreSQL (localhost)" : isNeon ? "Neon Postgres (Cloud Dev)" : "AWS RDS Cloud Database";
     console.log(`\n========================================`);
     console.log(` FindShopEasily Backend Starting...`);
     console.log(` Environment : [${env.NODE_ENV}]`);
-    console.log(` Database Target: ${isLocal ? "Local PostgreSQL (localhost:5432)" : "AWS RDS Cloud Database"}`);
+    console.log(` Database Target: ${dbLabel}`);
     console.log(`========================================\n`);
 
     console.log("Connecting to PostgreSQL...");

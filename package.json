@@ -13,6 +13,12 @@
     "dev:prod": "DOTENV_CONFIG_PATH=.env.production tsx watch -r dotenv/config src/server.ts",
     "prebuild": "node scripts/generate-build-info.js",
     "build": "tsc && cp src/build-info.json dist/ 2>/dev/null || true",
+    "migrate:local": "DOTENV_CONFIG_PATH=.env.local node -r dotenv/config node_modules/.bin/sequelize-cli db:migrate",
+    "migrate:undo:local": "DOTENV_CONFIG_PATH=.env.local node -r dotenv/config node_modules/.bin/sequelize-cli db:migrate:undo",
+    "migrate:dev": "DOTENV_CONFIG_PATH=.env.development node -r dotenv/config node_modules/.bin/sequelize-cli db:migrate",
+    "migrate:undo:dev": "DOTENV_CONFIG_PATH=.env.development node -r dotenv/config node_modules/.bin/sequelize-cli db:migrate:undo",
+    "migrate:prod": "DOTENV_CONFIG_PATH=.env.production node -r dotenv/config node_modules/.bin/sequelize-cli db:migrate",
+    "migrate:undo:prod": "DOTENV_CONFIG_PATH=.env.production node -r dotenv/config node_modules/.bin/sequelize-cli db:migrate:undo",
     "seed": "tsx src/database/seed.ts",
     "start": "node dist/server.js",
     "test": "echo \"Error: no test specified\" && exit 1"
