@@ -1,8 +1,10 @@
 import { Op, literal } from "sequelize";
+import bcrypt from "bcryptjs";
 import { Shop } from "./shop.model";
 import { User } from "../users/user.model";
 import { Product } from "../products/product.model";
 import { NotFoundError } from "../../core/errors/AppError";
+import { emailService } from "../../core/mail/email.service";
 import {
   calculateHaversineDistance,
   formatDistance,
@@ -34,8 +36,21 @@ export interface NearbyShopsQuery {
   limit?: number;
 }
 
+function generateSecureTempPassword(): string {
+  const letters = "ABCDEFGHJKMNPQRSTUVWXYZ";
+  const alphanum = "abcdefghjkmnpqrstuvwxyz23456789";
+  let randomStr = "";
+  for (let i = 0; i < 4; i++) {
+    randomStr += letters.charAt(Math.floor(Math.random() * letters.length));
+  }
+  for (let i = 0; i < 4; i++) {
+    randomStr += alphanum.charAt(Math.floor(Math.random() * alphanum.length));
+  }
+  return `Shop@${randomStr}`;
+}
+
 export interface CreateShopInput {
-  ownerId: number;
+  ownerId?: number;
   name: string;
   slug: string;
   description?: string | null;
@@ -48,6 +63,9 @@ export interface CreateShopInput {
   longitude: number;
   phone?: string | null;
   email?: string | null;
+  ownerName?: string | null;
+  ownerEmail?: string | null;
+  ownerPhone?: string | null;
   openingHours?: Record<string, unknown> | null;
   bannerUrl?: string | null;
   logoUrl?: string | null;
@@ -397,13 +415,81 @@ export class ShopService {
   }
 
   async create(data: CreateShopInput): Promise<Shop> {
+    const targetEmail = (data.ownerEmail || data.email || "").toLowerCase().trim();
+    const targetName = (data.ownerName || data.name || "Merchant Partner").trim();
+    const targetPhone = (data.ownerPhone || data.phone || "").trim() || null;
+
+    let ownerId = data.ownerId;
+    let tempPasswordGenerated: string | null = null;
+    let isNewUserCreated = false;
+
+    if (targetEmail) {
+      let user = await User.findOne({ where: { email: targetEmail } });
+
+      if (!user) {
+        tempPasswordGenerated = generateSecureTempPassword();
+        const salt = await bcrypt.genSalt(10);
+        const passwordHash = await bcrypt.hash(tempPasswordGenerated, salt);
+
+        user = await User.create({
+          name: targetName,
+          email: targetEmail,
+          passwordHash,
+          phone: targetPhone,
+          role: "shop_admin",
+          isActive: true,
+        });
+        isNewUserCreated = true;
+      } else if (user.role === "customer") {
+        // Upgrade customer to shop_admin so they can access merchant admin console
+        await user.update({ role: "shop_admin" });
+      }
+
+      ownerId = user.id;
+    }
+
+    if (!ownerId) {
+      ownerId = 1;
+    }
+
+    const {
+      ownerName: _on,
+      ownerEmail: _oe,
+      ownerPhone: _op,
+      ...rawShopAttributes
+    } = data;
+
     const shop = await Shop.create({
-      ...data,
+      ...rawShopAttributes,
+      ownerId,
+      phone: rawShopAttributes.phone || targetPhone,
+      email: rawShopAttributes.email || targetEmail || null,
       rating: 0,
       reviewCount: 0,
       isVerified: false,
       isOpen: true,
     });
+
+    if (tempPasswordGenerated && targetEmail) {
+      // Async dispatch welcome email via Nodemailer
+      emailService
+        .sendMerchantWelcomeEmail({
+          to: targetEmail,
+          ownerName: targetName,
+          shopName: shop.name,
+          tempPassword: tempPasswordGenerated,
+        })
+        .catch((err) => {
+          console.error(`[ShopService] Failed to send merchant welcome email to ${targetEmail}:`, err);
+        });
+
+      (shop as any).merchantCredentials = {
+        email: targetEmail,
+        tempPassword: tempPasswordGenerated,
+        isNewUser: isNewUserCreated,
+      };
+    }
+
     return shop;
   }
 

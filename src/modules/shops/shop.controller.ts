@@ -143,7 +143,11 @@ export class ShopController {
   async create(req: Request, res: Response, next: NextFunction): Promise<void> {
     try {
       const shop = await shopService.create(req.body);
-      sendCreated(res, formatMediaUrls(shop), "Shop created successfully");
+      const formatted = formatMediaUrls(shop);
+      if ((shop as any).merchantCredentials) {
+        (formatted as any).merchantCredentials = (shop as any).merchantCredentials;
+      }
+      sendCreated(res, formatted, "Shop created successfully");
     } catch (error) {
       next(error);
     }
