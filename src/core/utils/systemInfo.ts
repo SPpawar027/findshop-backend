@@ -2,6 +2,7 @@ import { execSync } from "child_process";
 import fs from "fs";
 import path from "path";
 import { sequelize } from "../../config/database";
+import { storageService } from "../storage/storage.service";
 
 export interface DeploymentInfo {
   commit: string;
@@ -130,6 +131,7 @@ export async function getSystemHealthAndInfo() {
       latencyMs: dbLatencyMs,
       dialect: "postgresql",
     },
+    storage: storageService.getConfigSummary(),
     runtime: {
       nodeVersion: process.version,
       platform: process.platform,

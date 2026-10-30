@@ -95,6 +95,8 @@ export class LocationService {
           ? (localityInfo.administrative as Array<Record<string, unknown>>)
           : [];
 
+        const ADMIN_NOISE_REGEX = /\b(tehsil|tahsil|taluk|taluka|mandal|block|subdistrict|sub-district|revenue circle|division|district)\b/i;
+
         // 1. State
         const stateObj = adminArray.find(
           (item) =>
@@ -106,30 +108,41 @@ export class LocationService {
           (data.principalSubdivision as string) ||
           "Madhya Pradesh";
 
-        // 2. Extract district / urban center (adminLevel 5)
+        // 2. District / Urban Center (adminLevel 5)
         const districtObj = adminArray.find((item) =>
           typeof item.name === "string" &&
           (item.adminLevel === 5 ||
             item.name.toLowerCase().includes("district") ||
-            item.name.toLowerCase().includes("division") ||
             (typeof item.description === "string" && item.description.toLowerCase().includes("district")))
         );
         const districtName = districtObj && typeof districtObj.name === "string"
           ? districtObj.name.replace(/\s+(district|division)/gi, "").trim()
           : "";
 
-        // 3. Sub-district / Tehsil (adminLevel 6)
-        const subDistrictObj = adminArray.find((item) => item.adminLevel === 6);
-        const subDistrictName =
-          subDistrictObj && typeof subDistrictObj.name === "string"
-            ? subDistrictObj.name.trim()
-            : "";
+        // 3. Clean administrative entries that are not administrative division noise
+        const cleanAdminEntries = adminArray.filter((item) => {
+          if (!item.name || typeof item.name !== "string") return false;
+          return !ADMIN_NOISE_REGEX.test(item.name);
+        });
 
-        // 4. Granular locality / village / neighborhood (adminLevel >= 7 or highest order)
+        // Find human settlement entry (e.g. "Rau", description: "human settlement")
+        const settlementObj = cleanAdminEntries.find((item) => {
+          const desc = typeof item.description === "string" ? item.description.toLowerCase() : "";
+          return (
+            desc.includes("human settlement") ||
+            desc.includes("village") ||
+            desc.includes("town") ||
+            desc.includes("suburb") ||
+            desc.includes("neighbourhood") ||
+            desc.includes("neighborhood") ||
+            desc.includes("city")
+          );
+        });
+
+        // Granular locality candidates (adminLevel >= 7 or high order that is not noise)
         const districtOrder = typeof districtObj?.order === "number" ? districtObj.order : 0;
-        const granularCandidates = adminArray
+        const granularCandidates = cleanAdminEntries
           .filter((item) => {
-            if (!item.name || typeof item.name !== "string") return false;
             const lvl = typeof item.adminLevel === "number" ? item.adminLevel : 0;
             const ord = typeof item.order === "number" ? item.order : 0;
             return lvl >= 7 || (lvl > 5 && ord > districtOrder);
@@ -147,35 +160,41 @@ export class LocationService {
           granularCandidates[0] && typeof granularCandidates[0].name === "string"
             ? granularCandidates[0].name.trim()
             : "";
+        const settlementName =
+          settlementObj && typeof settlementObj.name === "string"
+            ? settlementObj.name.trim()
+            : "";
 
-        // True City
-        let city = districtName || (data.city as string) || (data.principalSubdivision as string) || "Indore";
-        if (districtName && data.city && typeof data.city === "string") {
-          if (subDistrictName && data.city.toLowerCase() === subDistrictName.toLowerCase()) {
-            city = districtName;
-          }
-        }
+        // Locality resolution: prioritize clean locality from BDC or verified human settlement
+        const rawLocality = typeof data.locality === "string" ? data.locality.trim() : "";
+        const cleanLocality = !ADMIN_NOISE_REGEX.test(rawLocality) ? rawLocality : "";
 
-        // True Locality
+        const rawCity = typeof data.city === "string" ? data.city.trim() : "";
+        const cleanCity = !ADMIN_NOISE_REGEX.test(rawCity) ? rawCity : "";
+
+        // The true original local place (e.g. "Rau")
         let locality =
+          cleanLocality ||
+          settlementName ||
           granularName ||
-          (subDistrictName && subDistrictName.toLowerCase() !== city.toLowerCase() ? subDistrictName : "") ||
-          (data.locality as string) ||
-          (data.city && typeof data.city === "string" && data.city.toLowerCase() !== city.toLowerCase() ? data.city : "") ||
+          cleanCity ||
+          districtName ||
           "Nearby Area";
 
-        if (locality.toLowerCase() === city.toLowerCase()) {
-          if (granularName && granularName.toLowerCase() !== city.toLowerCase()) {
-            locality = granularName;
-          } else if (subDistrictName && subDistrictName.toLowerCase() !== city.toLowerCase()) {
-            locality = subDistrictName;
-          }
+        locality = locality.replace(ADMIN_NOISE_REGEX, "").trim();
+
+        // City
+        let city = cleanCity || settlementName || districtName || "Indore";
+        if (districtName && cleanCity && cleanCity.toLowerCase() === districtName.toLowerCase()) {
+          city = districtName;
         }
 
         const pincode = typeof data.postcode === "string" && data.postcode ? data.postcode : undefined;
-        const formattedAddress = locality.toLowerCase() === city.toLowerCase()
-          ? `${locality}, ${state}`
-          : `${locality}, ${city}, ${state}`;
+        const formattedAddress = districtName && locality.toLowerCase() !== districtName.toLowerCase()
+          ? `${locality}, ${districtName}, ${state}`
+          : locality.toLowerCase() !== city.toLowerCase()
+          ? `${locality}, ${city}, ${state}`
+          : `${locality}, ${state}`;
 
         const result: ReverseGeocodeResult = {
           latitude: lat,

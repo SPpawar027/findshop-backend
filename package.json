@@ -20,6 +20,7 @@
     "migrate:prod": "DOTENV_CONFIG_PATH=.env.production node -r dotenv/config node_modules/.bin/sequelize-cli db:migrate",
     "migrate:undo:prod": "DOTENV_CONFIG_PATH=.env.production node -r dotenv/config node_modules/.bin/sequelize-cli db:migrate:undo",
     "seed": "tsx src/database/seed.ts",
+    "seed:local": "DOTENV_CONFIG_PATH=.env.local tsx -r dotenv/config src/database/seed-local-data.ts",
     "start": "node dist/server.js",
     "test": "echo \"Error: no test specified\" && exit 1"
   },

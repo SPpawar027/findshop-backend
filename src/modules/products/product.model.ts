@@ -9,13 +9,15 @@ import {
 } from "sequelize";
 import { sequelize } from "../../config/database";
 import type { Shop } from "../shops/shop.model";
+import type { Category } from "../categories/category.model";
 
 export class Product extends Model<
-  InferAttributes<Product, { omit: "shop" }>,
-  InferCreationAttributes<Product, { omit: "shop" }>
+  InferAttributes<Product, { omit: "shop" | "categoryRef" }>,
+  InferCreationAttributes<Product, { omit: "shop" | "categoryRef" }>
 > {
   declare id: CreationOptional<number>;
   declare shopId: ForeignKey<Shop["id"]>;
+  declare categoryId: ForeignKey<Category["id"]> | null;
   declare name: string;
   declare slug: string;
   declare description: string | null;
@@ -24,6 +26,8 @@ export class Product extends Model<
   declare discountPrice: number | null;
   declare stockQuantity: CreationOptional<number>;
   declare sku: string | null;
+  declare rating: CreationOptional<number>;
+  declare reviewCount: CreationOptional<number>;
   declare images: CreationOptional<string[]>;
   declare isAvailable: CreationOptional<boolean>;
   declare createdAt: CreationOptional<Date>;
@@ -31,6 +35,7 @@ export class Product extends Model<
 
   // Associations
   declare shop?: NonAttribute<Shop>;
+  declare categoryRef?: NonAttribute<Category>;
 }
 
 Product.init(
@@ -47,6 +52,15 @@ Product.init(
         model: "shops",
         key: "id",
       },
+    },
+    categoryId: {
+      type: DataTypes.INTEGER,
+      allowNull: true,
+      references: {
+        model: "categories",
+        key: "id",
+      },
+      onDelete: "SET NULL",
     },
     name: {
       type: DataTypes.STRING(200),
@@ -88,6 +102,20 @@ Product.init(
     sku: {
       type: DataTypes.STRING(100),
       allowNull: true,
+    },
+    rating: {
+      type: DataTypes.DECIMAL(3, 2),
+      allowNull: false,
+      defaultValue: 0,
+      get() {
+        const val = this.getDataValue("rating");
+        return val ? Number(val) : 0;
+      },
+    },
+    reviewCount: {
+      type: DataTypes.INTEGER,
+      allowNull: false,
+      defaultValue: 0,
     },
     images: {
       type: DataTypes.JSONB,

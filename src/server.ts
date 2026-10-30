@@ -1,6 +1,7 @@
 import { createApp } from "./app";
 import { sequelize } from "./database";
 import { env } from "./config/env";
+import { categoryService } from "./modules/categories/category.service";
 
 async function startServer(): Promise<void> {
   try {
@@ -17,6 +18,9 @@ async function startServer(): Promise<void> {
     // Verify database connection and models
     await sequelize.authenticate();
     console.log("✅ PostgreSQL connection established successfully.");
+
+    // Ensure Category table and standard MVP 5-sector categories are seeded
+    await categoryService.ensureDefaultCategories();
 
     const app = createApp();
 

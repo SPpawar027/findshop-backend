@@ -9,6 +9,8 @@ import { uploadRouter } from "./modules/upload/upload.routes";
 import { legalRouter } from "./modules/legal/legal.routes";
 import { appVersionRouter } from "./modules/appVersion/appVersion.routes";
 import { locationRouter } from "./modules/locations/location.routes";
+import { categoryRouter } from "./modules/categories/category.routes";
+import { reviewRouter } from "./modules/reviews/review.routes";
 import { requestLogger } from "./core/middlewares/requestLogger";
 import { errorHandler } from "./core/middlewares/errorHandler";
 import { NotFoundError } from "./core/errors/AppError";
@@ -53,10 +55,12 @@ export function createApp(): express.Application {
   app.use("/api/users", userRouter);
   app.use("/api/shops", shopRouter);
   app.use("/api/products", productRouter);
+  app.use("/api/categories", categoryRouter);
   app.use("/api/locations", locationRouter);
   app.use("/api/upload", uploadRouter);
   app.use("/api/legal", legalRouter);
   app.use("/api/app-version", appVersionRouter);
+  app.use("/api/reviews", reviewRouter);
 
   // 404 handler for unknown routes
   app.use((_req, _res, next) => {

@@ -9,6 +9,7 @@ export class ProductController {
     try {
       const query = {
         ...req.query,
+        categoryId: req.query.categoryId !== undefined ? Number(req.query.categoryId) : undefined,
         lat: req.query.lat !== undefined ? Number(req.query.lat) : undefined,
         lng: req.query.lng !== undefined ? Number(req.query.lng) : undefined,
         radiusKm: req.query.radius !== undefined

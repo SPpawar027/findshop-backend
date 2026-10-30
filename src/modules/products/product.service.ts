@@ -1,12 +1,14 @@
 import { Op, literal } from "sequelize";
 import { Product } from "./product.model";
 import { Shop } from "../shops/shop.model";
+import { Category } from "../categories/category.model";
 import { NotFoundError } from "../../core/errors/AppError";
 import { storageService } from "../../core/storage/storage.service";
 
 export interface ListProductsQuery {
   shopId?: number;
   category?: string;
+  categoryId?: number;
   search?: string;
   minPrice?: number;
   maxPrice?: number;
@@ -24,6 +26,7 @@ export interface CreateProductInput {
   slug: string;
   description?: string | null;
   category: string;
+  categoryId?: number | null;
   price: number;
   discountPrice?: number | null;
   stockQuantity?: number;
@@ -44,7 +47,21 @@ export class ProductService {
       where.shopId = Number(query.shopId);
     }
 
-    if (query.category) {
+    if (query.categoryId) {
+      const catId = Number(query.categoryId);
+      const targetCat = await Category.findByPk(catId);
+      if (targetCat && targetCat.level === 1) {
+        // If it's an L1 department, include all child categories
+        const children = await Category.findAll({
+          where: { parentId: catId },
+          attributes: ["id"],
+        });
+        const allIds = [catId, ...children.map((c) => c.id)];
+        where.categoryId = { [Op.in]: allIds };
+      } else {
+        where.categoryId = catId;
+      }
+    } else if (query.category) {
       where.category = query.category;
     }
 
@@ -121,9 +138,16 @@ export class ProductService {
       }
     }
 
+    const categoryInclude = {
+      model: Category,
+      as: "categoryRef",
+      attributes: ["id", "name", "slug", "icon", "emoji", "level", "parentId"],
+      required: false,
+    };
+
     const { count, rows } = await Product.findAndCountAll({
       where,
-      include: [shopInclude],
+      include: [shopInclude, categoryInclude],
       limit,
       offset,
       order: [["createdAt", "DESC"]],
@@ -169,6 +193,12 @@ export class ProductService {
             "logoUrl",
           ],
         },
+        {
+          model: Category,
+          as: "categoryRef",
+          attributes: ["id", "name", "slug", "icon", "emoji", "level", "parentId"],
+          required: false,
+        },
       ],
     });
     if (!product) {
@@ -207,6 +237,12 @@ export class ProductService {
             "logoUrl",
           ],
         },
+        {
+          model: Category,
+          as: "categoryRef",
+          attributes: ["id", "name", "slug", "icon", "emoji", "level", "parentId"],
+          required: false,
+        },
       ],
     });
     if (!product) {
@@ -222,13 +258,36 @@ export class ProductService {
     }
     return Product.findAll({
       where,
+      include: [
+        {
+          model: Category,
+          as: "categoryRef",
+          attributes: ["id", "name", "slug", "icon", "emoji", "level", "parentId"],
+          required: false,
+        },
+      ],
       order: [["createdAt", "DESC"]],
     });
   }
 
   async create(data: CreateProductInput): Promise<Product> {
+    let categoryName = data.category;
+    let categoryId = data.categoryId ?? null;
+
+    if (categoryId && !categoryName) {
+      const cat = await Category.findByPk(categoryId);
+      if (cat) categoryName = cat.name;
+    } else if (categoryName && !categoryId) {
+      const cat = await Category.findOne({
+        where: { name: { [Op.iLike]: categoryName.trim() } },
+      });
+      if (cat) categoryId = cat.id;
+    }
+
     const product = await Product.create({
       ...data,
+      category: categoryName || "General",
+      categoryId,
       stockQuantity: data.stockQuantity ?? 0,
       images: data.images ?? [],
       isAvailable: data.isAvailable ?? true,
@@ -271,6 +330,16 @@ export class ProductService {
     }
 
     const updateData = { ...data };
+
+    if (updateData.categoryId && !updateData.category) {
+      const cat = await Category.findByPk(updateData.categoryId);
+      if (cat) updateData.category = cat.name;
+    } else if (updateData.category && !updateData.categoryId) {
+      const cat = await Category.findOne({
+        where: { name: { [Op.iLike]: updateData.category.trim() } },
+      });
+      if (cat) updateData.categoryId = cat.id;
+    }
 
     if (updateData.images && updateData.images.length > 0) {
       const finalImages: string[] = [];

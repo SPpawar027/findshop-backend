@@ -4,6 +4,7 @@ import { User } from "../modules/users/user.model";
 import { Shop } from "../modules/shops/shop.model";
 import { Product } from "../modules/products/product.model";
 import { LegalDocument } from "../modules/legal/legal.model";
+import { categoryService } from "../modules/categories/category.service";
 import { setupAssociations } from "./associations";
 import { DEFAULT_LEGAL_DOCS } from "../modules/legal/legal.defaults";
 
@@ -139,12 +140,12 @@ export async function runSeed() {
         category: "Traditional & Ethnic Wear",
         description:
           "Known for mastercraft Banarasi zaris, pure Chanderi silhouettes, bridal ensembles, and handwoven festive sarees directly from master artisan clusters.",
-        address: "Shop 14, Ganj Bazaar Main Street, Near Old Town Clock Tower",
-        city: "Bengaluru",
-        state: "Karnataka",
-        postalCode: "560001",
-        latitude: 12.9716,
-        longitude: 77.5946,
+        address: "Shop 14, Rajwada Market, Near Old Town Palace",
+        city: "Indore",
+        state: "Madhya Pradesh",
+        postalCode: "452002",
+        latitude: 22.7196,
+        longitude: 75.8577,
         phone: "+917141234567",
         email: "contact@mahalaxmisarees.com",
         rating: 4.8,
@@ -163,11 +164,11 @@ export async function runSeed() {
         description:
           "Family-owned boutique known for handcrafted wooden collectibles, brass inlay jewelry boxes, home decor, and festival gift packs.",
         address: "Station Road, Opp. City Clock Tower, Commercial District",
-        city: "Bengaluru",
-        state: "Karnataka",
-        postalCode: "560001",
-        latitude: 12.975,
-        longitude: 77.601,
+        city: "Indore",
+        state: "Madhya Pradesh",
+        postalCode: "452002",
+        latitude: 22.7210,
+        longitude: 75.8590,
         phone: "+919425012345",
         email: "balajigifts@gmail.com",
         rating: 4.9,
@@ -185,12 +186,12 @@ export async function runSeed() {
         category: "Smartphones & Electronics",
         description:
           "Central tech destination featuring authentic accessories from top brands, fast tempered glass fitting, on-the-spot battery replacement, and warranty services.",
-        address: "Shop 8, Commercial Complex, Central Avenue",
-        city: "Bengaluru",
-        state: "Karnataka",
-        postalCode: "560001",
-        latitude: 12.978,
-        longitude: 77.59,
+        address: "Shop 8, Commercial Complex, Silicon City Main Road",
+        city: "Rau",
+        state: "Madhya Pradesh",
+        postalCode: "453331",
+        latitude: 22.6875,
+        longitude: 75.7942,
         phone: "+919876543211",
         email: "support@citymobile.com",
         rating: 4.6,
@@ -208,12 +209,12 @@ export async function runSeed() {
         category: "Footwear & Sportswear",
         description:
           "Official athletic footwear store stocking genuine running sneakers, training shorts, Dri-FIT activewear, and athletic backpacks.",
-        address: "Near Railway Station Road Plaza, Ground Floor",
-        city: "Bengaluru",
-        state: "Karnataka",
-        postalCode: "560001",
-        latitude: 12.969,
-        longitude: 77.61,
+        address: "Near Rau Bypass Flyover Plaza, AB Road",
+        city: "Rau",
+        state: "Madhya Pradesh",
+        postalCode: "453331",
+        latitude: 22.6888,
+        longitude: 75.7968,
         phone: "+919876543212",
         email: "support@nikehub.com",
         rating: 4.8,
@@ -231,12 +232,12 @@ export async function runSeed() {
         category: "Grocery & Supermarket",
         description:
           "Certified organic farm-fresh staples, unadulterated cold-pressed oils, premium basmati rice, dry fruits, and Vedic A2 Gir cow ghee.",
-        address: "12th Main, Indiranagar, 2nd Stage",
-        city: "Bengaluru",
-        state: "Karnataka",
-        postalCode: "560038",
-        latitude: 12.9784,
-        longitude: 77.6408,
+        address: "Shop 1-3, Rau Circle Commercial Complex, AB Road",
+        city: "Rau",
+        state: "Madhya Pradesh",
+        postalCode: "453331",
+        latitude: 22.6854,
+        longitude: 75.7959,
         phone: "+919876543210",
         email: "rajesh@kirana.com",
         rating: 4.8,
@@ -254,12 +255,12 @@ export async function runSeed() {
         category: "Sweets & Confectionery",
         description:
           "Traditional pure ghee Indian sweets, authentic Bikaneri namkeen, rich dry fruit hampers, festive gift boxes, and freshly fried snacks.",
-        address: "45, Commercial Street, Tasker Town",
-        city: "Bengaluru",
-        state: "Karnataka",
-        postalCode: "560001",
-        latitude: 12.982,
-        longitude: 77.608,
+        address: "56 Dukan Street, New Palasia",
+        city: "Indore",
+        state: "Madhya Pradesh",
+        postalCode: "452001",
+        latitude: 22.7250,
+        longitude: 75.8800,
         phone: "+919876543213",
         email: "orders@bikanervala.com",
         rating: 4.7,
@@ -277,12 +278,12 @@ export async function runSeed() {
         category: "Pharmacy & Health",
         description:
           "24/7 licensed retail pharmacy with complete prescription medications, genuine wellness supplements, baby care essentials, and diagnostic monitoring devices.",
-        address: "100 Feet Road, 4th Block, Koramangala",
-        city: "Bengaluru",
-        state: "Karnataka",
-        postalCode: "560034",
-        latitude: 12.9352,
-        longitude: 77.6245,
+        address: "Silicon City Square, Cat Road",
+        city: "Rau",
+        state: "Madhya Pradesh",
+        postalCode: "453331",
+        latitude: 22.6840,
+        longitude: 75.7938,
         phone: "+919876543214",
         email: "care@apollopharmacy.com",
         rating: 4.9,
@@ -779,6 +780,10 @@ export async function runSeed() {
         lastUpdatedBy: "Super Admin",
       },
     ];
+
+    // Seed Default 5-Primary Categories & Subcategories
+    await categoryService.ensureDefaultCategories();
+    console.log("✓ Seeded Categories & Subcategories across 5 MVP Sectors.");
 
     // Ensure table exists even if migrations were pending
     await LegalDocument.sync();
