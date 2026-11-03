@@ -9,6 +9,13 @@ export interface SendMerchantWelcomeInput {
   loginUrl?: string;
 }
 
+export interface SendPasswordResetInput {
+  to: string;
+  userName: string;
+  resetUrl: string;
+  tokenExpiresMinutes?: number;
+}
+
 export interface EmailSendResult {
   success: boolean;
   delivered: boolean;
@@ -381,6 +388,130 @@ The FindShopEasily Team
     } catch (err: unknown) {
       const errorMessage = err instanceof Error ? err.message : String(err);
       console.error(`[EmailService] Error sending welcome email to ${to}:`, errorMessage);
+      return {
+        success: false,
+        delivered: false,
+        simulated: false,
+        error: errorMessage,
+      };
+    }
+  }
+
+  /**
+   * Dispatches a secure password reset link to user.
+   */
+  async sendPasswordResetEmail(data: SendPasswordResetInput): Promise<EmailSendResult> {
+    const { to, userName, resetUrl, tokenExpiresMinutes = 30 } = data;
+
+    const fromAddress =
+      process.env.SMTP_FROM ||
+      (process.env.SMTP_USER
+        ? `"FindShopEasily" <${process.env.SMTP_USER}>`
+        : '"FindShopEasily" <no-reply@findshopeasily.com>');
+
+    if (!this.isConfigured || !this.transporter) {
+      this.initTransporter();
+    }
+
+    if (!this.isConfigured || !this.transporter) {
+      console.log(`
+┌────────────────────────────────────────────────────────────────────────┐
+│ [FindShopEasily Mailer] SIMULATED PASSWORD RESET (SMTP Not Configured) │
+├────────────────────────────────────────────────────────────────────────┤
+│ To:           ${to}
+│ User Name:    ${userName}
+│ Reset URL:    ${resetUrl}
+│ Validity:     ${tokenExpiresMinutes} minutes
+├────────────────────────────────────────────────────────────────────────┤
+│ Note: Set SMTP_HOST, SMTP_PORT, SMTP_USER, and SMTP_PASS in .env       │
+│ to enable real email delivery.                                         │
+└────────────────────────────────────────────────────────────────────────┘
+      `);
+
+      return {
+        success: true,
+        delivered: false,
+        simulated: true,
+      };
+    }
+
+    const subject = "Reset your FindShopEasily account password";
+
+    const htmlContent = `
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>${subject}</title>
+  <style>
+    body { margin: 0; padding: 0; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; background-color: #F9F5F0; color: #1F2937; line-height: 1.6; }
+    .wrapper { width: 100%; background-color: #F9F5F0; padding: 32px 12px; }
+    .card { max-width: 580px; margin: 0 auto; background: #FFFFFF; border-radius: 20px; border: 1px solid #E8E1D5; overflow: hidden; box-shadow: 0 4px 20px rgba(52, 79, 31, 0.08); }
+    .header { background: linear-gradient(135deg, #344F1F 0%, #243815 100%); padding: 32px 28px; text-align: center; color: #FFFFFF; }
+    .header h1 { margin: 0 0 6px 0; font-size: 22px; font-weight: 800; letter-spacing: -0.5px; }
+    .content { padding: 32px 28px; }
+    .btn-container { text-align: center; margin: 30px 0; }
+    .btn { display: inline-block; background-color: #344F1F; color: #F9F5F0 !important; font-weight: 700; font-size: 14px; text-decoration: none; padding: 14px 28px; border-radius: 12px; }
+    .footer { font-size: 12px; color: #6B7280; text-align: center; margin-top: 24px; border-top: 1px solid #F3F4F6; padding-top: 16px; }
+  </style>
+</head>
+<body>
+  <div class="wrapper">
+    <div class="card">
+      <div class="header">
+        <h1>Password Reset Request</h1>
+      </div>
+      <div class="content">
+        <p>Hello <strong>${userName}</strong>,</p>
+        <p>We received a request to reset your password for your FindShopEasily account. Click the button below to choose a new password:</p>
+        <div class="btn-container">
+          <a href="${resetUrl}" class="btn" target="_blank">Reset My Password</a>
+        </div>
+        <p style="font-size: 13px; color: #4B5563;">This link is valid for <strong>${tokenExpiresMinutes} minutes</strong>. If you did not make this request, you can safely ignore this email; your account remains secure.</p>
+        <div class="footer">
+          <p>FindShopEasily &copy; 2026. All rights reserved.</p>
+        </div>
+      </div>
+    </div>
+  </div>
+</body>
+</html>
+    `.trim();
+
+    const textContent = `
+Hello ${userName},
+
+We received a request to reset your password for your FindShopEasily account.
+
+Reset link (valid for ${tokenExpiresMinutes} minutes):
+${resetUrl}
+
+If you did not request this, please ignore this email.
+
+Best regards,
+The FindShopEasily Team
+    `.trim();
+
+    try {
+      const info = await this.transporter.sendMail({
+        from: fromAddress,
+        to,
+        subject,
+        text: textContent,
+        html: htmlContent,
+      });
+
+      console.log(`[EmailService] Password reset email sent to ${to}. MessageId: ${info.messageId}`);
+      return {
+        success: true,
+        delivered: true,
+        simulated: false,
+        messageId: info.messageId,
+      };
+    } catch (err: unknown) {
+      const errorMessage = err instanceof Error ? err.message : String(err);
+      console.error(`[EmailService] Error sending password reset email to ${to}:`, errorMessage);
       return {
         success: false,
         delivered: false,

@@ -1,6 +1,6 @@
 import { Router } from "express";
 import { productController } from "./product.controller";
-import { authMiddleware } from "../../core/middlewares/auth.middleware";
+import { authMiddleware, requireRole } from "../../core/middlewares/auth.middleware";
 
 export const productRouter = Router();
 
@@ -11,11 +11,29 @@ productRouter.get("/slug/:slug", (req, res, next) => productController.getBySlug
 productRouter.get("/:id", (req, res, next) => productController.getById(req, res, next));
 
 // Shopkeeper & Admin Reorder Route
-productRouter.post("/shop/:shopId/category/:categoryId/reorder", authMiddleware, (req, res, next) =>
-  productController.reorderProducts(req, res, next)
+productRouter.post(
+  "/shop/:shopId/category/:categoryId/reorder",
+  authMiddleware,
+  requireRole(["shop_admin", "super_admin"]),
+  (req, res, next) => productController.reorderProducts(req, res, next)
 );
 
-// Product Write Routes (Authenticated)
-productRouter.post("/", authMiddleware, (req, res, next) => productController.create(req, res, next));
-productRouter.put("/:id", authMiddleware, (req, res, next) => productController.update(req, res, next));
-productRouter.delete("/:id", authMiddleware, (req, res, next) => productController.delete(req, res, next));
+// Product Write Routes (Authenticated Merchants & Superadmin)
+productRouter.post(
+  "/",
+  authMiddleware,
+  requireRole(["shop_admin", "super_admin"]),
+  (req, res, next) => productController.create(req, res, next)
+);
+productRouter.put(
+  "/:id",
+  authMiddleware,
+  requireRole(["shop_admin", "super_admin"]),
+  (req, res, next) => productController.update(req, res, next)
+);
+productRouter.delete(
+  "/:id",
+  authMiddleware,
+  requireRole(["shop_admin", "super_admin"]),
+  (req, res, next) => productController.delete(req, res, next)
+);

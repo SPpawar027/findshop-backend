@@ -22,6 +22,8 @@ export class User extends Model<
   declare phone: string | null;
   declare role: CreationOptional<UserRole>;
   declare isActive: CreationOptional<boolean>;
+  declare resetPasswordToken: string | null;
+  declare resetPasswordExpires: Date | null;
   declare createdAt: CreationOptional<Date>;
   declare updatedAt: CreationOptional<Date>;
 
@@ -65,6 +67,14 @@ User.init(
       type: DataTypes.BOOLEAN,
       allowNull: false,
       defaultValue: true,
+    },
+    resetPasswordToken: {
+      type: DataTypes.STRING(255),
+      allowNull: true,
+    },
+    resetPasswordExpires: {
+      type: DataTypes.DATE,
+      allowNull: true,
     },
     createdAt: {
       type: DataTypes.DATE,
