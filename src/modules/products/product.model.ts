@@ -29,9 +29,11 @@ export class Product extends Model<
   declare rating: CreationOptional<number>;
   declare reviewCount: CreationOptional<number>;
   declare images: CreationOptional<string[]>;
+  declare sortOrder: CreationOptional<number>;
   declare isAvailable: CreationOptional<boolean>;
   declare createdAt: CreationOptional<Date>;
   declare updatedAt: CreationOptional<Date>;
+  declare deletedAt: CreationOptional<Date | null>;
 
   // Associations
   declare shop?: NonAttribute<Shop>;
@@ -122,6 +124,12 @@ Product.init(
       allowNull: false,
       defaultValue: [],
     },
+    sortOrder: {
+      type: DataTypes.INTEGER,
+      allowNull: false,
+      defaultValue: 0,
+      field: "sort_order",
+    },
     isAvailable: {
       type: DataTypes.BOOLEAN,
       allowNull: false,
@@ -135,10 +143,16 @@ Product.init(
       type: DataTypes.DATE,
       defaultValue: DataTypes.NOW,
     },
+    deletedAt: {
+      type: DataTypes.DATE,
+      allowNull: true,
+      defaultValue: null,
+    },
   },
   {
     sequelize,
     tableName: "products",
     timestamps: true,
+    paranoid: true,
   }
 );

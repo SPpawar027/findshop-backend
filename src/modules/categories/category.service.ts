@@ -1,5 +1,8 @@
 import { Op } from "sequelize";
+import { sequelize } from "../../config/database";
 import { Category } from "./category.model";
+import { ShopSubcategory } from "./shopSubcategory.model";
+import { Shop } from "../shops/shop.model";
 import { DEFAULT_PRIMARY_CATEGORIES } from "./category.defaults";
 import { NotFoundError, BadRequestError } from "../../core/errors/AppError";
 
@@ -11,6 +14,7 @@ export interface CreateCategoryInput {
   level?: number;
   icon?: string;
   emoji?: string;
+  imageUrl?: string | null;
   orderIndex?: number;
   isActive?: boolean;
 }
@@ -23,6 +27,7 @@ export interface UpdateCategoryInput {
   level?: number;
   icon?: string;
   emoji?: string;
+  imageUrl?: string | null;
   orderIndex?: number;
   isActive?: boolean;
 }
@@ -284,6 +289,7 @@ export class CategoryService {
       level,
       icon: data.icon || "shopping-bag",
       emoji: data.emoji || (level === 1 ? "🛒" : "📦"),
+      imageUrl: data.imageUrl || null,
       orderIndex: data.orderIndex ?? 0,
       isActive: data.isActive ?? true,
     });
@@ -325,6 +331,7 @@ export class CategoryService {
       level: data.level !== undefined ? data.level : category.level,
       icon: data.icon !== undefined ? data.icon : category.icon,
       emoji: data.emoji !== undefined ? data.emoji : category.emoji,
+      imageUrl: data.imageUrl !== undefined ? data.imageUrl : category.imageUrl,
       orderIndex: data.orderIndex !== undefined ? data.orderIndex : category.orderIndex,
       isActive: data.isActive !== undefined ? data.isActive : category.isActive,
     });
@@ -343,6 +350,279 @@ export class CategoryService {
 
     await category.destroy();
     return { success: true, message: `Category '${category.name}' deleted successfully` };
+  }
+
+  /**
+   * Reorder L1 Categories (Super Admin Global Sorting)
+   */
+  async reorderCategories(items: Array<{ id: number; orderIndex: number }>) {
+    if (!Array.isArray(items) || items.length === 0) {
+      throw new BadRequestError("Items array must be provided with at least one element");
+    }
+
+    // Verify all IDs are valid and unique
+    const idSet = new Set<number>();
+    for (const item of items) {
+      if (!item.id || typeof item.orderIndex !== "number") {
+        throw new BadRequestError("Each item must have a valid id and numeric orderIndex");
+      }
+      if (idSet.has(item.id)) {
+        throw new BadRequestError(`Duplicate category ID ${item.id} detected in reorder payload`);
+      }
+      idSet.add(item.id);
+    }
+
+    const categories = await Category.findAll({
+      where: { id: Array.from(idSet) },
+    });
+
+    if (categories.length !== idSet.size) {
+      throw new BadRequestError("One or more category IDs in the reorder list do not exist");
+    }
+
+    // Transactional atomic sequence update
+    await sequelize.transaction(async (t) => {
+      for (const item of items) {
+        await Category.update(
+          { orderIndex: Math.max(0, Math.floor(item.orderIndex)) },
+          { where: { id: item.id }, transaction: t }
+        );
+      }
+    });
+
+    return this.getTree();
+  }
+
+  /**
+   * Reorder Subcategories under a Parent Category (Super Admin Global Sorting)
+   */
+  async reorderSubcategories(parentId: number, items: Array<{ id: number; orderIndex: number }>) {
+    if (!Array.isArray(items) || items.length === 0) {
+      throw new BadRequestError("Items array must be provided with at least one element");
+    }
+
+    const parent = await Category.findByPk(parentId);
+    if (!parent) {
+      throw new NotFoundError(`Parent category with ID ${parentId} not found`);
+    }
+
+    const idSet = new Set<number>();
+    for (const item of items) {
+      if (!item.id || typeof item.orderIndex !== "number") {
+        throw new BadRequestError("Each item must have a valid id and numeric orderIndex");
+      }
+      if (idSet.has(item.id)) {
+        throw new BadRequestError(`Duplicate subcategory ID ${item.id} detected in reorder payload`);
+      }
+      idSet.add(item.id);
+    }
+
+    const subcategories = await Category.findAll({
+      where: {
+        id: Array.from(idSet),
+        parentId,
+      },
+    });
+
+    if (subcategories.length !== idSet.size) {
+      throw new BadRequestError(
+        `All subcategories must belong to parent category ID ${parentId}`
+      );
+    }
+
+    await sequelize.transaction(async (t) => {
+      for (const item of items) {
+        await Category.update(
+          { orderIndex: Math.max(0, Math.floor(item.orderIndex)) },
+          { where: { id: item.id, parentId }, transaction: t }
+        );
+      }
+    });
+
+    return this.findSubcategories(parentId);
+  }
+
+  /**
+   * Get Shop-Specific Subcategories
+   * Merges global active subcategories with shop-specific ordering & visibility.
+   */
+  async getShopSubcategories(shopId: number, parentId?: number) {
+    const shop = await Shop.findByPk(shopId);
+    if (!shop) {
+      throw new NotFoundError(`Shop with ID ${shopId} not found`);
+    }
+
+    const categoryWhere: any = {
+      level: 2,
+      isActive: true,
+    };
+    if (parentId) {
+      categoryWhere.parentId = parentId;
+    }
+
+    const [allSubcategories, shopConfigs] = await Promise.all([
+      Category.findAll({
+        where: categoryWhere,
+        include: [
+          {
+            model: Category,
+            as: "parent",
+            attributes: ["id", "name", "slug", "emoji", "icon"],
+            required: false,
+          },
+        ],
+        order: [
+          ["orderIndex", "ASC"],
+          ["name", "ASC"],
+        ],
+      }),
+      ShopSubcategory.findAll({
+        where: { shopId },
+      }),
+    ]);
+
+    const configMap = new Map<number, ShopSubcategory>();
+    let maxShopSortOrder = 0;
+    shopConfigs.forEach((c) => {
+      configMap.set(c.subcategoryId, c);
+      if (c.sortOrder > maxShopSortOrder) {
+        maxShopSortOrder = c.sortOrder;
+      }
+    });
+
+    // Merge global subcategories with shop custom order & visibility
+    const merged = allSubcategories.map((subcat) => {
+      const cfg = configMap.get(subcat.id);
+      // If shop has custom configs, place unconfigured new subcategories after them
+      const defaultSort =
+        shopConfigs.length > 0
+          ? maxShopSortOrder + 1 + (subcat.orderIndex || 0)
+          : (subcat.orderIndex || 0);
+
+      return {
+        id: subcat.id,
+        name: subcat.name,
+        slug: subcat.slug,
+        description: subcat.description,
+        parentId: subcat.parentId,
+        parentName: subcat.parent?.name || "General",
+        parentEmoji: subcat.parent?.emoji || "🛒",
+        emoji: subcat.emoji,
+        icon: subcat.icon,
+        imageUrl: subcat.imageUrl,
+        globalOrderIndex: subcat.orderIndex,
+        sortOrder: cfg ? cfg.sortOrder : defaultSort,
+        isVisible: cfg ? cfg.isVisible : true,
+        isCustomized: Boolean(cfg),
+      };
+    });
+
+    // Sort by shop's custom sortOrder ASC, then fallback to name ASC
+    return merged.sort((a, b) => {
+      if (a.sortOrder !== b.sortOrder) return a.sortOrder - b.sortOrder;
+      return a.name.localeCompare(b.name);
+    });
+  }
+
+  /**
+   * Update Shop Subcategory Visibility (enable/disable for shop)
+   */
+  async updateShopSubcategoryVisibility(shopId: number, subcategoryId: number, isVisible: boolean) {
+    const subcat = await Category.findOne({ where: { id: subcategoryId, level: 2 } });
+    if (!subcat) {
+      throw new NotFoundError(`Subcategory with ID ${subcategoryId} not found`);
+    }
+
+    const existing = await ShopSubcategory.findOne({
+      where: { shopId, subcategoryId },
+    });
+
+    if (existing) {
+      await existing.update({ isVisible });
+      return existing;
+    }
+
+    return ShopSubcategory.create({
+      shopId,
+      subcategoryId,
+      sortOrder: subcat.orderIndex,
+      isVisible,
+    });
+  }
+
+  /**
+   * Reorder Shop Subcategories (Shop-Specific Custom Display Order)
+   */
+  async reorderShopSubcategories(
+    shopId: number,
+    items: Array<{ subcategoryId: number; sortOrder: number; isVisible?: boolean }>
+  ) {
+    if (!Array.isArray(items) || items.length === 0) {
+      throw new BadRequestError("Items array must be provided with at least one element");
+    }
+
+    const idSet = new Set<number>();
+    for (const item of items) {
+      if (!item.subcategoryId || typeof item.sortOrder !== "number") {
+        throw new BadRequestError("Each item must have a valid subcategoryId and numeric sortOrder");
+      }
+      if (idSet.has(item.subcategoryId)) {
+        throw new BadRequestError(
+          `Duplicate subcategoryId ${item.subcategoryId} in shop reorder payload`
+        );
+      }
+      idSet.add(item.subcategoryId);
+    }
+
+    const validSubcats = await Category.findAll({
+      where: {
+        id: Array.from(idSet),
+        level: 2,
+      },
+      attributes: ["id"],
+    });
+
+    if (validSubcats.length !== idSet.size) {
+      throw new BadRequestError("One or more subcategory IDs are invalid or not L2 subcategories");
+    }
+
+    await sequelize.transaction(async (t) => {
+      for (const item of items) {
+        const existing = await ShopSubcategory.findOne({
+          where: { shopId, subcategoryId: item.subcategoryId },
+          transaction: t,
+        });
+
+        const sortOrder = Math.max(0, Math.floor(item.sortOrder));
+        const isVisible = item.isVisible !== undefined ? item.isVisible : existing ? existing.isVisible : true;
+
+        if (existing) {
+          await existing.update({ sortOrder, isVisible }, { transaction: t });
+        } else {
+          await ShopSubcategory.create(
+            {
+              shopId,
+              subcategoryId: item.subcategoryId,
+              sortOrder,
+              isVisible,
+            },
+            { transaction: t }
+          );
+        }
+      }
+    });
+
+    return this.getShopSubcategories(shopId);
+  }
+
+  /**
+   * Reset Shop-Specific Subcategories Order to Global Default
+   */
+  async resetShopSubcategories(shopId: number) {
+    await ShopSubcategory.destroy({
+      where: { shopId },
+    });
+    return this.getShopSubcategories(shopId);
   }
 }
 

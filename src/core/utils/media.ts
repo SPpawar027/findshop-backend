@@ -42,6 +42,11 @@ export function formatMediaUrls<T extends Record<string, any>>(entity: T): T {
     json.images = json.images.map((img: string) => getFullMediaUrl(img));
   }
 
+  // Format category media
+  if ("imageUrl" in json) {
+    json.imageUrl = getFullMediaUrl(json.imageUrl);
+  }
+
   // Format nested shop (in product detail)
   if ("shop" in json && json.shop && typeof json.shop === "object") {
     json.shop = formatMediaUrls(json.shop);

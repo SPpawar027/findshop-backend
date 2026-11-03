@@ -1,7 +1,12 @@
 import { Router } from "express";
 import { shopController } from "./shop.controller";
+import { categoryController } from "../categories/category.controller";
 
 export const shopRouter = Router();
+
+shopRouter.get("/:shopId/subcategories", (req, res, next) =>
+  categoryController.getShopSubcategories(req, res, next)
+);
 
 shopRouter.get("/", (req, res, next) => shopController.getAll(req, res, next));
 shopRouter.get("/nearby", (req, res, next) => shopController.getNearby(req, res, next));

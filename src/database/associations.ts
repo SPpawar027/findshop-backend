@@ -3,6 +3,12 @@ import { Shop } from "../modules/shops/shop.model";
 import { Product } from "../modules/products/product.model";
 import { Category } from "../modules/categories/category.model";
 import { Review } from "../modules/reviews/review.model";
+import { TemporaryUpload } from "../modules/upload/temporaryUpload.model";
+import { ImageDeletionJob } from "../modules/upload/imageDeletionJob.model";
+import { ImageAsset } from "../modules/upload/imageAsset.model";
+import { ShopAnalyticsEvent } from "../modules/analytics/shopAnalyticsEvent.model";
+import { ShopAnalyticsDaily } from "../modules/analytics/shopAnalyticsDaily.model";
+import { ShopSubcategory } from "../modules/categories/shopSubcategory.model";
 
 /**
  * ============================================================================
@@ -113,6 +119,125 @@ export function setupAssociations(): void {
   Review.belongsTo(Shop, {
     foreignKey: "reportedByShopId",
     as: "reportedByShop",
+  });
+
+  // --------------------------------------------------------------------------
+  // RELATIONSHIP 6: Storage & Image Assets
+  // --------------------------------------------------------------------------
+  User.hasMany(TemporaryUpload, {
+    foreignKey: "userId",
+    as: "temporaryUploads",
+    onDelete: "CASCADE",
+  });
+
+  TemporaryUpload.belongsTo(User, {
+    foreignKey: "userId",
+    as: "user",
+  });
+
+  Shop.hasMany(TemporaryUpload, {
+    foreignKey: "shopId",
+    as: "temporaryUploads",
+    onDelete: "SET NULL",
+  });
+
+  TemporaryUpload.belongsTo(Shop, {
+    foreignKey: "shopId",
+    as: "shop",
+  });
+
+  Shop.hasMany(ImageAsset, {
+    foreignKey: "shopId",
+    as: "imageAssets",
+    onDelete: "CASCADE",
+  });
+
+  ImageAsset.belongsTo(Shop, {
+    foreignKey: "shopId",
+    as: "shop",
+  });
+
+  User.hasMany(ImageDeletionJob, {
+    foreignKey: "requestedByUserId",
+    as: "deletionJobs",
+    onDelete: "SET NULL",
+  });
+
+  ImageDeletionJob.belongsTo(User, {
+    foreignKey: "requestedByUserId",
+    as: "requestedByUser",
+  });
+
+  // --------------------------------------------------------------------------
+  // RELATIONSHIP 7: Shop Analytics (Raw Events & Daily Aggregates)
+  // --------------------------------------------------------------------------
+  Shop.hasMany(ShopAnalyticsEvent, {
+    foreignKey: "shopId",
+    as: "analyticsEvents",
+    onDelete: "CASCADE",
+  });
+
+  ShopAnalyticsEvent.belongsTo(Shop, {
+    foreignKey: "shopId",
+    as: "shop",
+  });
+
+  User.hasMany(ShopAnalyticsEvent, {
+    foreignKey: "userId",
+    as: "analyticsEvents",
+    onDelete: "SET NULL",
+  });
+
+  ShopAnalyticsEvent.belongsTo(User, {
+    foreignKey: "userId",
+    as: "user",
+  });
+
+  Product.hasMany(ShopAnalyticsEvent, {
+    foreignKey: "productId",
+    as: "analyticsEvents",
+    onDelete: "SET NULL",
+  });
+
+  ShopAnalyticsEvent.belongsTo(Product, {
+    foreignKey: "productId",
+    as: "product",
+  });
+
+  Shop.hasMany(ShopAnalyticsDaily, {
+    foreignKey: "shopId",
+    as: "dailyAnalytics",
+    onDelete: "CASCADE",
+  });
+
+  ShopAnalyticsDaily.belongsTo(Shop, {
+    foreignKey: "shopId",
+    as: "shop",
+  });
+
+  // --------------------------------------------------------------------------
+  // RELATIONSHIP 8: Shop Subcategories (Shop-Specific Subcategory Ordering & Visibility)
+  // --------------------------------------------------------------------------
+  Shop.hasMany(ShopSubcategory, {
+    foreignKey: "shopId",
+    as: "shopSubcategories",
+    onDelete: "CASCADE",
+  });
+
+  ShopSubcategory.belongsTo(Shop, {
+    foreignKey: "shopId",
+    as: "shop",
+  });
+
+  Category.hasMany(ShopSubcategory, {
+    foreignKey: "subcategoryId",
+    as: "shopSubcategories",
+    onDelete: "CASCADE",
+  });
+
+  ShopSubcategory.belongsTo(Category, {
+    foreignKey: "subcategoryId",
+    as: "subcategory",
   });
 }
 

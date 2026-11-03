@@ -1,8 +1,10 @@
 import type { Request, Response, NextFunction } from "express";
 import { productService } from "./product.service";
+import { Shop } from "../shops/shop.model";
 import { sendSuccess, sendCreated } from "../../core/utils/response";
-import { BadRequestError } from "../../core/errors/AppError";
+import { BadRequestError, UnauthorizedError, ForbiddenError, NotFoundError } from "../../core/errors/AppError";
 import { formatMediaUrls } from "../../core/utils/media";
+import type { AuthenticatedRequest } from "../../core/middlewares/auth.middleware";
 
 export class ProductController {
   async getAll(req: Request, res: Response, next: NextFunction): Promise<void> {
@@ -65,7 +67,7 @@ export class ProductController {
     }
   }
 
-  async create(req: Request, res: Response, next: NextFunction): Promise<void> {
+  async create(req: AuthenticatedRequest, res: Response, next: NextFunction): Promise<void> {
     try {
       const product = await productService.create(req.body);
       sendCreated(res, formatMediaUrls(product), "Product created successfully");
@@ -74,7 +76,7 @@ export class ProductController {
     }
   }
 
-  async update(req: Request, res: Response, next: NextFunction): Promise<void> {
+  async update(req: AuthenticatedRequest, res: Response, next: NextFunction): Promise<void> {
     try {
       const id = Number(req.params.id);
       if (isNaN(id)) {
@@ -87,7 +89,7 @@ export class ProductController {
     }
   }
 
-  async delete(req: Request, res: Response, next: NextFunction): Promise<void> {
+  async delete(req: AuthenticatedRequest, res: Response, next: NextFunction): Promise<void> {
     try {
       const id = Number(req.params.id);
       if (isNaN(id)) {
@@ -99,7 +101,46 @@ export class ProductController {
       next(error);
     }
   }
+
+  /**
+   * POST /api/products/shop/:shopId/category/:categoryId/reorder
+   * Reorders products within a specific shop and subcategory
+   */
+  async reorderProducts(req: AuthenticatedRequest, res: Response, next: NextFunction): Promise<void> {
+    try {
+      if (!req.user) {
+        throw new UnauthorizedError("Authentication required");
+      }
+
+      const shopId = Number(req.params.shopId);
+      const categoryId = Number(req.params.categoryId);
+
+      if (isNaN(shopId) || isNaN(categoryId)) {
+        throw new BadRequestError("Valid shopId and categoryId are required");
+      }
+
+      // Shop ownership check
+      const shop = await Shop.findByPk(shopId);
+      if (!shop) {
+        throw new NotFoundError(`Shop with ID ${shopId} not found`);
+      }
+
+      if (req.user.role !== "super_admin" && shop.ownerId !== req.user.id) {
+        throw new ForbiddenError("You do not have permission to manage this shop's products");
+      }
+
+      const items = req.body.items;
+      if (!Array.isArray(items)) {
+        throw new BadRequestError("Request body must contain an 'items' array with id and sortOrder");
+      }
+
+      const updatedProducts = await productService.reorderProducts(shopId, categoryId, items);
+      const formatted = updatedProducts.map((p) => formatMediaUrls(p));
+      sendSuccess(res, formatted, "Products reordered successfully");
+    } catch (error) {
+      next(error);
+    }
+  }
 }
 
 export const productController = new ProductController();
-

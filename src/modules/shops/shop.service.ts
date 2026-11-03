@@ -5,6 +5,8 @@ import { User } from "../users/user.model";
 import { Product } from "../products/product.model";
 import { NotFoundError } from "../../core/errors/AppError";
 import { emailService } from "../../core/mail/email.service";
+import { uploadService } from "../upload/upload.service";
+import { storageService } from "../../core/storage/storage.service";
 import {
   calculateHaversineDistance,
   formatDistance,
@@ -499,7 +501,62 @@ export class ShopService {
       throw new NotFoundError(`Shop with id ${id} not found`);
     }
 
-    await shop.update(data);
+    const updateData = { ...data };
+    const oldLogo = shop.logoUrl;
+    const oldBanner = shop.bannerUrl;
+
+    // Promote new logo if uploaded to temporary storage
+    if (updateData.logoUrl && updateData.logoUrl.includes("temp/uploads/")) {
+      try {
+        const permanentLogoKey = `shops/${shop.id}/logo.webp`;
+        await uploadService.promoteUpload({
+          tempKeyOrId: updateData.logoUrl,
+          targetPermanentKey: permanentLogoKey,
+          entityType: "shop",
+          entityId: shop.id,
+          shopId: shop.id,
+          imageRole: "logo",
+        });
+        updateData.logoUrl = permanentLogoKey;
+      } catch (err: any) {
+        console.error(`Failed to promote shop logo [${updateData.logoUrl}]:`, err?.message);
+      }
+    }
+
+    // Promote new banner if uploaded to temporary storage
+    if (updateData.bannerUrl && updateData.bannerUrl.includes("temp/uploads/")) {
+      try {
+        const permanentBannerKey = `shops/${shop.id}/banner.webp`;
+        await uploadService.promoteUpload({
+          tempKeyOrId: updateData.bannerUrl,
+          targetPermanentKey: permanentBannerKey,
+          entityType: "shop",
+          entityId: shop.id,
+          shopId: shop.id,
+          imageRole: "banner",
+        });
+        updateData.bannerUrl = permanentBannerKey;
+      } catch (err: any) {
+        console.error(`Failed to promote shop banner [${updateData.bannerUrl}]:`, err?.message);
+      }
+    }
+
+    await shop.update(updateData);
+
+    // If logo was replaced with a different custom key, schedule safe deletion of old logo
+    if (updateData.logoUrl && oldLogo && oldLogo !== updateData.logoUrl && oldLogo.startsWith("shops/")) {
+      storageService.deleteObject(oldLogo).catch((delErr) => {
+        console.warn(`[Storage Warning] Failed to delete replaced logo [${oldLogo}]:`, delErr?.message);
+      });
+    }
+
+    // If banner was replaced with a different custom key, schedule safe deletion of old banner
+    if (updateData.bannerUrl && oldBanner && oldBanner !== updateData.bannerUrl && oldBanner.startsWith("shops/")) {
+      storageService.deleteObject(oldBanner).catch((delErr) => {
+        console.warn(`[Storage Warning] Failed to delete replaced banner [${oldBanner}]:`, delErr?.message);
+      });
+    }
+
     return shop;
   }
 

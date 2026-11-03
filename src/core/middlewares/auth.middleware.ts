@@ -31,3 +31,22 @@ export function authMiddleware(req: AuthenticatedRequest, _res: Response, next: 
     throw new UnauthorizedError("Invalid or expired authentication token");
   }
 }
+
+export function optionalAuthMiddleware(req: AuthenticatedRequest, _res: Response, next: NextFunction): void {
+  const authHeader = req.headers.authorization;
+
+  if (!authHeader || !authHeader.startsWith("Bearer ")) {
+    return next();
+  }
+
+  const token = authHeader.split(" ")[1];
+
+  try {
+    const decoded = jwt.verify(token, JWT_SECRET) as AuthenticatedUser;
+    req.user = decoded;
+  } catch {
+    // Ignore invalid/expired tokens for optional authentication and continue as guest
+  }
+
+  next();
+}

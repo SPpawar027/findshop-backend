@@ -1,37 +1,57 @@
 import {
   S3Client,
   PutObjectCommand,
+  GetObjectCommand,
+  HeadObjectCommand,
   CopyObjectCommand,
   DeleteObjectCommand,
+  DeleteObjectsCommand,
 } from "@aws-sdk/client-s3";
 import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
 import { BadRequestError } from "../errors/AppError";
 
 export type ImageEntityType = "shop-banner" | "shop-logo" | "product-image";
-export type StorageProvider = "s3" | "r2";
+export type StorageProvider = "s3";
 
 export interface PresignedUrlRequest {
   entityType: ImageEntityType;
+  userId: number;
   shopId: number;
   productId?: number;
   fileName: string;
   contentType: string;
+  fileSize?: number;
 }
 
 export interface PresignedUrlResponse {
+  uploadId: string;
   uploadUrl: string;
   storageKey: string;
   publicUrl: string;
+  expiresInSeconds: number;
 }
 
 export interface StorageConfigSummary {
   provider: StorageProvider;
   bucket: string;
   region: string;
-  endpoint?: string;
+  endpoint: string;
   cdnUrl: string | null;
   isConfigured: boolean;
   maskedAccessKeyId: string | null;
+}
+
+export interface ObjectMetadata {
+  contentLength: number;
+  contentType: string;
+  eTag?: string;
+  lastModified?: Date;
+}
+
+export interface WebPSignatureCheck {
+  isValid: boolean;
+  fileSize: number;
+  error?: string;
 }
 
 /**
@@ -45,76 +65,69 @@ function maskKey(key?: string | null): string | null {
   return `${trimmed.slice(0, 4)}...${trimmed.slice(-4)}`;
 }
 
-class StorageService {
+/**
+ * Reusable Storage Service Abstraction
+ * Pure AWS S3 implementation for Local, Development, and Production environments.
+ */
+export class StorageService {
   private client: S3Client | null = null;
   private bucket: string = "";
 
-  /**
-   * Resolves active storage provider based on environment variables:
-   * 1. Explicit `STORAGE_PROVIDER` ("s3" | "r2")
-   * 2. Fallback based on `NODE_ENV`:
-   *    - "production" -> "r2" (Cloudflare R2 with zero egress fees)
-   *    - "development" / "local" / default -> "s3" (AWS S3)
-   */
   public getProvider(): StorageProvider {
-    const raw = (process.env.STORAGE_PROVIDER || "").toLowerCase().trim();
-    if (raw === "r2" || raw === "cloudflare") {
-      return "r2";
-    }
-    if (raw === "s3" || raw === "aws") {
-      return "s3";
-    }
-    return process.env.NODE_ENV === "production" ? "r2" : "s3";
+    return "s3";
   }
 
   /**
-   * Lazily instantiates and caches the S3Client instance.
-   * Both AWS S3 and Cloudflare R2 utilize the standard S3 API protocol.
+   * Enforces environment isolation:
+   * Prevents local/development environments from accessing production buckets,
+   * and prevents production environments from targeting development buckets.
+   */
+  private validateBucketIsolation(bucketName: string): void {
+    const isProduction = process.env.NODE_ENV === "production";
+    const lowerBucket = bucketName.toLowerCase();
+
+    if (!isProduction && (lowerBucket.includes("-prod") || lowerBucket.endsWith("-production"))) {
+      throw new Error(
+        `[Storage Security Alert] Development/Local environment cannot target production bucket "${bucketName}".`
+      );
+    }
+
+    if (isProduction && (lowerBucket.includes("-dev") || lowerBucket.includes("-local") || lowerBucket.includes("-test"))) {
+      throw new Error(
+        `[Storage Security Alert] Production environment cannot target non-production bucket "${bucketName}".`
+      );
+    }
+  }
+
+  /**
+   * Lazily instantiates and caches the AWS S3Client instance.
    */
   public getClient(): S3Client {
     if (this.client) return this.client;
 
-    const provider = this.getProvider();
+    const region = process.env.AWS_REGION || "ap-south-1";
+    const isProduction = process.env.NODE_ENV === "production";
+    const defaultBucket = isProduction ? "findshop-prod-media" : "findshop-dev-media-sagar";
+    this.bucket = process.env.AWS_S3_BUCKET || defaultBucket;
 
-    if (provider === "r2") {
-      const accountId = process.env.R2_ACCOUNT_ID;
-      const accessKeyId = process.env.R2_ACCESS_KEY_ID;
-      const secretAccessKey = process.env.R2_SECRET_ACCESS_KEY;
-      this.bucket = process.env.R2_BUCKET || "findshop-prod-media";
+    this.validateBucketIsolation(this.bucket);
 
-      if (!accountId || !accessKeyId || !secretAccessKey) {
-        throw new Error(
-          "Missing Cloudflare R2 environment variables: R2_ACCOUNT_ID, R2_ACCESS_KEY_ID, R2_SECRET_ACCESS_KEY are required for R2 storage"
-        );
-      }
+    const accessKeyId = process.env.AWS_ACCESS_KEY_ID;
+    const secretAccessKey = process.env.AWS_SECRET_ACCESS_KEY;
 
-      this.client = new S3Client({
-        region: "auto", // Cloudflare R2 requires region: "auto"
-        endpoint: `https://${accountId}.r2.cloudflarestorage.com`,
-        credentials: { accessKeyId, secretAccessKey },
-      });
-    } else {
-      // AWS S3 for local development and development environments
-      const region = process.env.AWS_REGION || "ap-south-1";
-      const accessKeyId = process.env.AWS_ACCESS_KEY_ID;
-      const secretAccessKey = process.env.AWS_SECRET_ACCESS_KEY;
-      this.bucket = process.env.AWS_S3_BUCKET || "findshop-dev-media-sagar";
-
-      this.client = new S3Client({
-        region,
-        credentials:
-          accessKeyId && secretAccessKey
-            ? { accessKeyId, secretAccessKey }
-            : undefined, // Allows IAM Instance Profiles on EC2/ECS when env vars are omitted
-      });
-    }
+    this.client = new S3Client({
+      region,
+      credentials:
+        accessKeyId && secretAccessKey
+          ? { accessKeyId, secretAccessKey }
+          : undefined, // Supports IAM Instance Profiles on EC2/ECS/EKS when env vars omitted
+    });
 
     return this.client;
   }
 
   /**
-   * Resets cached S3 client and bucket.
-   * Useful when switching environments or executing test suites.
+   * Resets cached client and bucket (useful during tests or environment switching).
    */
   public resetClient(): void {
     this.client = null;
@@ -122,14 +135,18 @@ class StorageService {
   }
 
   /**
-   * Extracts clean storage key from a plain key or full URL.
-   * Handles:
-   * - Plain keys: "shops/1/logo/123.webp" -> "shops/1/logo/123.webp"
-   * - Relative paths: "/shops/1/logo/123.webp" -> "shops/1/logo/123.webp"
-   * - CDN URLs: "https://media.findshopeasily.com/shops/1/logo/123.webp" -> "shops/1/logo/123.webp"
-   * - S3 URLs: "https://bucket.s3.ap-south-1.amazonaws.com/shops/1/logo/123.webp" -> "shops/1/logo/123.webp"
-   * - R2 URLs: "https://pub-xyz.r2.dev/shops/1/logo/123.webp" -> "shops/1/logo/123.webp"
-   * - Presigned / query URLs: strips query strings (?X-Amz-...) and hash fragments
+   * Returns active bucket name.
+   */
+  public getBucketName(): string {
+    if (!this.bucket) {
+      this.getClient();
+    }
+    return this.bucket;
+  }
+
+  /**
+   * Extracts clean storage key from plain key or full URL.
+   * Strips query strings, bucket prefixes, and domains.
    */
   public extractKeyFromUrl(keyOrUrl: string): string {
     if (!keyOrUrl || typeof keyOrUrl !== "string") {
@@ -148,7 +165,7 @@ class StorageService {
         pathname = pathname.replace(/^\/+/, "");
 
         // Path-style S3 URL: https://s3.region.amazonaws.com/bucket/key
-        const currentBucket = this.bucket || process.env.AWS_S3_BUCKET || process.env.R2_BUCKET || "";
+        const currentBucket = this.bucket || process.env.AWS_S3_BUCKET || "";
         if (currentBucket && pathname.startsWith(`${currentBucket}/`)) {
           pathname = pathname.slice(currentBucket.length + 1);
         }
@@ -164,7 +181,7 @@ class StorageService {
 
   /**
    * Resolves canonical public image URL for a given storage key.
-   * Uses MEDIA_CDN_URL if configured, otherwise falls back to provider default URL.
+   * Uses MEDIA_CDN_URL if configured, otherwise falls back to direct S3 URL.
    */
   public getPublicUrl(keyOrUrl: string): string {
     if (!keyOrUrl) return "";
@@ -179,97 +196,206 @@ class StorageService {
       return `${cdnBase}/${cleanKey}`;
     }
 
-    const provider = this.getProvider();
-    if (provider === "r2") {
-      const accountId = process.env.R2_ACCOUNT_ID;
-      const bucket = process.env.R2_BUCKET || "findshop-prod-media";
-      if (accountId) {
-        return `https://${bucket}.${accountId}.r2.cloudflarestorage.com/${cleanKey}`;
-      }
-      return `/${cleanKey}`;
-    } else {
-      const region = process.env.AWS_REGION || "ap-south-1";
-      const bucket = process.env.AWS_S3_BUCKET || "findshop-dev-media-sagar";
-      return `https://${bucket}.s3.${region}.amazonaws.com/${cleanKey}`;
-    }
+    const region = process.env.AWS_REGION || "ap-south-1";
+    const bucket = this.getBucketName();
+    return `https://${bucket}.s3.${region}.amazonaws.com/${cleanKey}`;
   }
 
   /**
-   * Generates a clean, hierarchical storage key:
-   * - shops/{shopId}/banner/{timestamp}_{cleanedFileName}
-   * - shops/{shopId}/logo/{timestamp}_{cleanedFileName}
-   * - shops/{shopId}/products/{productId}/{timestamp}_{cleanedFileName}
+   * Generates a temporary storage key:
+   * temp/uploads/{userId}/{uploadId}.webp
    */
-  public generateKey(params: PresignedUrlRequest): string {
-    const timestamp = Date.now();
-    const cleanFileName = params.fileName.replace(/[^a-zA-Z0-9.-]/g, "_").toLowerCase();
+  public generateTempKey(userId: number, uploadId: string): string {
+    const cleanUserId = String(userId).replace(/[^0-9]/g, "");
+    const cleanUploadId = uploadId.replace(/[^a-zA-Z0-9-]/g, "");
+    return `temp/uploads/${cleanUserId}/${cleanUploadId}.webp`;
+  }
+
+  /**
+   * Generates a permanent storage key:
+   * - shops/{shopId}/logo.webp
+   * - shops/{shopId}/banner.webp
+   * - products/{shopId}/{productId}/{imageId}.webp
+   */
+  public generatePermanentKey(params: {
+    entityType: ImageEntityType;
+    shopId: number;
+    productId?: number;
+    imageId?: string;
+  }): string {
+    const cleanShopId = String(params.shopId).replace(/[^0-9]/g, "");
+    const imageId = params.imageId ? params.imageId.replace(/[^a-zA-Z0-9-_]/g, "") : Date.now().toString();
 
     switch (params.entityType) {
-      case "shop-banner":
-        return `shops/${params.shopId}/banner/${timestamp}_${cleanFileName}`;
       case "shop-logo":
-        return `shops/${params.shopId}/logo/${timestamp}_${cleanFileName}`;
+        return `shops/${cleanShopId}/logo.webp`;
+      case "shop-banner":
+        return `shops/${cleanShopId}/banner.webp`;
       case "product-image":
         if (!params.productId) {
-          return `shops/${params.shopId}/products/temp/${timestamp}_${cleanFileName}`;
+          throw new BadRequestError("productId is required to generate a permanent product image key");
         }
-        return `shops/${params.shopId}/products/${params.productId}/${timestamp}_${cleanFileName}`;
+        const cleanProductId = String(params.productId).replace(/[^0-9]/g, "");
+        return `products/${cleanShopId}/${cleanProductId}/${imageId}.webp`;
       default:
-        throw new BadRequestError("Invalid entityType for image upload");
+        throw new BadRequestError("Invalid entityType for permanent storage key generation");
     }
   }
 
   /**
-   * Generates a Presigned PUT URL allowing clients (mobile app, shop admin)
-   * to upload binary image directly to AWS S3 or Cloudflare R2.
-   *
-   * SigV4 presigned URLs are standard across both AWS S3 and Cloudflare R2.
+   * Generates a short-lived presigned PUT URL (5 minutes / 300 seconds)
+   * strictly restricted to ContentType "image/webp".
    */
   public async getPresignedUploadUrl(params: PresignedUrlRequest): Promise<PresignedUrlResponse> {
     const s3 = this.getClient();
-    const storageKey = this.generateKey(params);
+    const uploadId = crypto.randomUUID();
+    const storageKey = this.generateTempKey(params.userId, uploadId);
 
     const command = new PutObjectCommand({
       Bucket: this.bucket,
       Key: storageKey,
-      ContentType: params.contentType,
+      ContentType: "image/webp",
     });
 
-    // Valid for 10 minutes (600 seconds)
-    const uploadUrl = await getSignedUrl(s3, command, { expiresIn: 600 });
+    // 5 minutes (300 seconds) expiry as mandated by security specification
+    const uploadUrl = await getSignedUrl(s3, command, { expiresIn: 300 });
     const publicUrl = this.getPublicUrl(storageKey);
 
     return {
+      uploadId,
       uploadUrl,
       storageKey,
       publicUrl,
+      expiresInSeconds: 300,
     };
   }
 
   /**
-   * Uploads a Buffer directly from the server.
-   * Useful for internal batch tasks, system assets, or server-side optimizations.
+   * Inspects S3 object metadata using HeadObjectCommand.
    */
-  public async uploadBuffer(key: string, buffer: Buffer, contentType: string): Promise<string> {
+  public async headObject(keyOrUrl: string): Promise<ObjectMetadata> {
+    const key = this.extractKeyFromUrl(keyOrUrl);
     const s3 = this.getClient();
-    const cleanKey = this.extractKeyFromUrl(key);
 
-    await s3.send(
-      new PutObjectCommand({
+    const response = await s3.send(
+      new HeadObjectCommand({
         Bucket: this.bucket,
-        Key: cleanKey,
-        Body: buffer,
-        ContentType: contentType,
+        Key: key,
       })
     );
 
-    return this.getPublicUrl(cleanKey);
+    return {
+      contentLength: response.ContentLength || 0,
+      contentType: response.ContentType || "application/octet-stream",
+      eTag: response.ETag,
+      lastModified: response.LastModified,
+    };
   }
 
   /**
-   * Deletes an object from the storage bucket.
-   * Accepts either a storage key or a full URL.
-   * Deletion in S3/R2 is idempotent (deleting a missing key succeeds or returns 404).
+   * Validates authentic WebP file signature by reading the first 12 bytes via S3 Range request.
+   * Magic number structure:
+   * - Offset 0..3: ASCII "RIFF" (0x52, 0x49, 0x46, 0x46)
+   * - Offset 4..7: File size (32-bit integer)
+   * - Offset 8..11: ASCII "WEBP" (0x57, 0x45, 0x42, 0x50)
+   */
+  public async validateWebPSignature(keyOrUrl: string): Promise<WebPSignatureCheck> {
+    const key = this.extractKeyFromUrl(keyOrUrl);
+    const s3 = this.getClient();
+
+    try {
+      const response = await s3.send(
+        new GetObjectCommand({
+          Bucket: this.bucket,
+          Key: key,
+          Range: "bytes=0-11", // Only fetch first 12 bytes
+        })
+      );
+
+      const stream = response.Body;
+      if (!stream) {
+        return { isValid: false, fileSize: 0, error: "Empty S3 object body" };
+      }
+
+      // Convert stream to Buffer
+      const chunks: Buffer[] = [];
+      for await (const chunk of stream as any) {
+        chunks.push(Buffer.from(chunk));
+      }
+      const buffer = Buffer.concat(chunks);
+
+      if (buffer.length < 12) {
+        return {
+          isValid: false,
+          fileSize: buffer.length,
+          error: "File is smaller than minimum WebP header size (12 bytes)",
+        };
+      }
+
+      const riff = buffer.toString("ascii", 0, 4);
+      const webp = buffer.toString("ascii", 8, 12);
+
+      if (riff !== "RIFF" || webp !== "WEBP") {
+        return {
+          isValid: false,
+          fileSize: buffer.length,
+          error: `Invalid file signature: expected 'RIFF....WEBP', received '${riff}....${webp}'`,
+        };
+      }
+
+      // Read total object size via HeadObject
+      const head = await this.headObject(key);
+
+      return {
+        isValid: true,
+        fileSize: head.contentLength,
+      };
+    } catch (err: any) {
+      return {
+        isValid: false,
+        fileSize: 0,
+        error: `Failed to inspect S3 file signature: ${err?.message || "Unknown error"}`,
+      };
+    }
+  }
+
+  /**
+   * Copies an object within the S3 bucket from source to destination.
+   */
+  public async copyObject(sourceKeyOrUrl: string, destKeyOrUrl: string): Promise<string> {
+    const s3 = this.getClient();
+    const sourceKey = this.extractKeyFromUrl(sourceKeyOrUrl);
+    const destKey = this.extractKeyFromUrl(destKeyOrUrl);
+
+    const copySource = `${this.bucket}/${encodeURI(sourceKey)}`;
+
+    await s3.send(
+      new CopyObjectCommand({
+        Bucket: this.bucket,
+        CopySource: copySource,
+        Key: destKey,
+        ContentType: "image/webp",
+        MetadataDirective: "COPY",
+      })
+    );
+
+    return destKey;
+  }
+
+  /**
+   * Promotes a temporary object to permanent location and deletes the temporary object.
+   * Handles partial failures and retries safely.
+   */
+  public async moveObject(sourceKeyOrUrl: string, destKeyOrUrl: string): Promise<string> {
+    const cleanDest = await this.copyObject(sourceKeyOrUrl, destKeyOrUrl);
+    // Delete source only after copy successfully verifies
+    await this.deleteObject(sourceKeyOrUrl);
+    return cleanDest;
+  }
+
+  /**
+   * Deletes an object from the S3 bucket.
+   * Idempotent: returns true if deleted or already missing (404 / NoSuchKey).
    */
   public async deleteObject(keyOrUrl: string): Promise<boolean> {
     const key = this.extractKeyFromUrl(keyOrUrl);
@@ -287,106 +413,75 @@ class StorageService {
       );
       return true;
     } catch (error: any) {
-      // If object already does not exist, consider idempotent success
       if (error?.name === "NoSuchKey" || error?.$metadata?.httpStatusCode === 404) {
         return true;
       }
-      console.error(`Storage deletion failed for [${key}]:`, error?.message || error);
+      console.error(`S3 deletion failed for [${key}]:`, error?.message || error);
       throw error;
     }
   }
 
   /**
-   * Batch deletes multiple objects safely.
+   * Batch deletes multiple objects safely using S3 DeleteObjectsCommand.
    */
   public async deleteObjects(keysOrUrls: string[]): Promise<{ deleted: string[]; errors: string[] }> {
-    const deleted: string[] = [];
-    const errors: string[] = [];
-
-    for (const item of keysOrUrls) {
-      try {
-        await this.deleteObject(item);
-        deleted.push(this.extractKeyFromUrl(item));
-      } catch (err: any) {
-        errors.push(`${this.extractKeyFromUrl(item)}: ${err?.message || "Delete error"}`);
-      }
+    const keys = keysOrUrls.map((k) => this.extractKeyFromUrl(k)).filter(Boolean);
+    if (keys.length === 0) {
+      return { deleted: [], errors: [] };
     }
 
-    return { deleted, errors };
-  }
-
-  /**
-   * Moves an object within the storage bucket (e.g. from temp to permanent folder).
-   * Works identically on AWS S3 and Cloudflare R2 using CopyObject + DeleteObject.
-   */
-  public async moveObject(sourceKey: string, destinationKey: string): Promise<string> {
     const s3 = this.getClient();
-    const cleanSource = this.extractKeyFromUrl(sourceKey);
-    const cleanDest = this.extractKeyFromUrl(destinationKey);
+    try {
+      const response = await s3.send(
+        new DeleteObjectsCommand({
+          Bucket: this.bucket,
+          Delete: {
+            Objects: keys.map((Key) => ({ Key })),
+            Quiet: false,
+          },
+        })
+      );
 
-    // S3 & R2 CopySource requires bucket/key
-    const copySource = `${this.bucket}/${encodeURI(cleanSource)}`;
-
-    await s3.send(
-      new CopyObjectCommand({
-        Bucket: this.bucket,
-        CopySource: copySource,
-        Key: cleanDest,
-      })
-    );
-
-    // Delete the source temporary object
-    await s3.send(
-      new DeleteObjectCommand({
-        Bucket: this.bucket,
-        Key: cleanSource,
-      })
-    );
-
-    return cleanDest;
+      const deleted = (response.Deleted || []).map((d) => d.Key || "");
+      const errors = (response.Errors || []).map((e) => `${e.Key}: ${e.Message || "Deletion failed"}`);
+      return { deleted, errors };
+    } catch (batchErr: any) {
+      console.error("Batch S3 deletion failed, falling back to individual deletes:", batchErr?.message);
+      const deleted: string[] = [];
+      const errors: string[] = [];
+      for (const k of keys) {
+        try {
+          await this.deleteObject(k);
+          deleted.push(k);
+        } catch (err: any) {
+          errors.push(`${k}: ${err?.message || "Failed"}`);
+        }
+      }
+      return { deleted, errors };
+    }
   }
 
   /**
    * Returns a sanitized storage configuration summary.
-   * Completely safe for health checks and status endpoints (secret keys are NEVER exposed).
+   * Secret keys are NEVER exposed.
    */
   public getConfigSummary(): StorageConfigSummary {
-    const provider = this.getProvider();
+    const region = process.env.AWS_REGION || "ap-south-1";
+    const bucket = this.getBucketName();
+    const accessKeyId = process.env.AWS_ACCESS_KEY_ID || "";
+    const hasSecret = Boolean(process.env.AWS_SECRET_ACCESS_KEY);
+    const isConfigured = Boolean((accessKeyId && hasSecret) || process.env.AWS_CONTAINER_CREDENTIALS_RELATIVE_URI);
     const cdnUrl = process.env.MEDIA_CDN_URL || null;
 
-    if (provider === "r2") {
-      const accountId = process.env.R2_ACCOUNT_ID || "";
-      const bucket = process.env.R2_BUCKET || "findshop-prod-media";
-      const accessKeyId = process.env.R2_ACCESS_KEY_ID || "";
-      const hasSecret = Boolean(process.env.R2_SECRET_ACCESS_KEY);
-      const isConfigured = Boolean(accountId && accessKeyId && hasSecret);
-
-      return {
-        provider: "r2",
-        bucket,
-        region: "auto",
-        endpoint: accountId ? `https://${accountId}.r2.cloudflarestorage.com` : undefined,
-        cdnUrl,
-        isConfigured,
-        maskedAccessKeyId: maskKey(accessKeyId),
-      };
-    } else {
-      const region = process.env.AWS_REGION || "ap-south-1";
-      const bucket = process.env.AWS_S3_BUCKET || "findshop-dev-media-sagar";
-      const accessKeyId = process.env.AWS_ACCESS_KEY_ID || "";
-      const hasSecret = Boolean(process.env.AWS_SECRET_ACCESS_KEY);
-      const isConfigured = Boolean((accessKeyId && hasSecret) || process.env.AWS_CONTAINER_CREDENTIALS_RELATIVE_URI);
-
-      return {
-        provider: "s3",
-        bucket,
-        region,
-        endpoint: `https://${bucket}.s3.${region}.amazonaws.com`,
-        cdnUrl,
-        isConfigured,
-        maskedAccessKeyId: maskKey(accessKeyId),
-      };
-    }
+    return {
+      provider: "s3",
+      bucket,
+      region,
+      endpoint: `https://${bucket}.s3.${region}.amazonaws.com`,
+      cdnUrl,
+      isConfigured,
+      maskedAccessKeyId: maskKey(accessKeyId),
+    };
   }
 }
 

@@ -1,13 +1,17 @@
 import type { Request, Response, NextFunction } from "express";
 import { categoryService } from "./category.service";
+import { Shop } from "../shops/shop.model";
 import { sendSuccess, sendCreated } from "../../core/utils/response";
-import { BadRequestError } from "../../core/errors/AppError";
+import { BadRequestError, ForbiddenError, UnauthorizedError, NotFoundError } from "../../core/errors/AppError";
+import { formatMediaUrls } from "../../core/utils/media";
+import type { AuthenticatedRequest } from "../../core/middlewares/auth.middleware";
 
 export class CategoryController {
   async getTree(_req: Request, res: Response, next: NextFunction): Promise<void> {
     try {
       const tree = await categoryService.getTree();
-      sendSuccess(res, tree, "Category tree fetched successfully");
+      const formatted = tree.map((cat) => formatMediaUrls(cat));
+      sendSuccess(res, formatted, "Category tree fetched successfully");
     } catch (error) {
       next(error);
     }
@@ -27,7 +31,8 @@ export class CategoryController {
       };
 
       const categories = await categoryService.findAll(query);
-      sendSuccess(res, categories, "Categories fetched successfully");
+      const formatted = categories.map((cat) => formatMediaUrls(cat));
+      sendSuccess(res, formatted, "Categories fetched successfully");
     } catch (error) {
       next(error);
     }
@@ -40,7 +45,7 @@ export class CategoryController {
         throw new BadRequestError("Invalid category ID");
       }
       const category = await categoryService.findById(id);
-      sendSuccess(res, category, "Category fetched successfully");
+      sendSuccess(res, formatMediaUrls(category), "Category fetched successfully");
     } catch (error) {
       next(error);
     }
@@ -53,7 +58,7 @@ export class CategoryController {
         throw new BadRequestError("Slug parameter is required");
       }
       const category = await categoryService.findBySlug(slug);
-      sendSuccess(res, category, "Category fetched successfully");
+      sendSuccess(res, formatMediaUrls(category), "Category fetched successfully");
     } catch (error) {
       next(error);
     }
@@ -66,15 +71,20 @@ export class CategoryController {
         throw new BadRequestError("Invalid parent category ID");
       }
       const subcategories = await categoryService.findSubcategories(parentId);
-      sendSuccess(res, subcategories, "Subcategories fetched successfully");
+      const formatted = subcategories.map((cat) => formatMediaUrls(cat));
+      sendSuccess(res, formatted, "Subcategories fetched successfully");
     } catch (error) {
       next(error);
     }
   }
 
-  async create(req: Request, res: Response, next: NextFunction): Promise<void> {
+  async create(req: AuthenticatedRequest, res: Response, next: NextFunction): Promise<void> {
     try {
-      const { name, slug, description, parentId, level, icon, emoji, orderIndex, isActive } = req.body;
+      if (!req.user || req.user.role !== "super_admin") {
+        throw new ForbiddenError("Only Super Admins can create global categories");
+      }
+
+      const { name, slug, description, parentId, level, icon, emoji, imageUrl, orderIndex, isActive } = req.body;
       if (!name) {
         throw new BadRequestError("Category name is required");
       }
@@ -87,32 +97,41 @@ export class CategoryController {
         level: level ? Number(level) : undefined,
         icon,
         emoji,
+        imageUrl,
         orderIndex: orderIndex !== undefined ? Number(orderIndex) : undefined,
         isActive: isActive !== undefined ? Boolean(isActive) : true,
       });
 
-      sendCreated(res, category, "Category created successfully");
+      sendCreated(res, formatMediaUrls(category), "Category created successfully");
     } catch (error) {
       next(error);
     }
   }
 
-  async update(req: Request, res: Response, next: NextFunction): Promise<void> {
+  async update(req: AuthenticatedRequest, res: Response, next: NextFunction): Promise<void> {
     try {
+      if (!req.user || req.user.role !== "super_admin") {
+        throw new ForbiddenError("Only Super Admins can update global categories");
+      }
+
       const id = Number(req.params.id);
       if (isNaN(id)) {
         throw new BadRequestError("Invalid category ID");
       }
 
       const category = await categoryService.update(id, req.body);
-      sendSuccess(res, category, "Category updated successfully");
+      sendSuccess(res, formatMediaUrls(category), "Category updated successfully");
     } catch (error) {
       next(error);
     }
   }
 
-  async delete(req: Request, res: Response, next: NextFunction): Promise<void> {
+  async delete(req: AuthenticatedRequest, res: Response, next: NextFunction): Promise<void> {
     try {
+      if (!req.user || req.user.role !== "super_admin") {
+        throw new ForbiddenError("Only Super Admins can delete global categories");
+      }
+
       const id = Number(req.params.id);
       if (isNaN(id)) {
         throw new BadRequestError("Invalid category ID");
@@ -129,6 +148,164 @@ export class CategoryController {
     try {
       const result = await categoryService.ensureDefaultCategories();
       sendSuccess(res, result, "Default categories verification completed");
+    } catch (error) {
+      next(error);
+    }
+  }
+
+  /**
+   * POST /api/categories/reorder
+   * Super Admin reorders L1 Categories
+   */
+  async reorderCategories(req: AuthenticatedRequest, res: Response, next: NextFunction): Promise<void> {
+    try {
+      if (!req.user || req.user.role !== "super_admin") {
+        throw new ForbiddenError("Only Super Admins can reorder global categories");
+      }
+
+      const items = req.body.items;
+      if (!Array.isArray(items)) {
+        throw new BadRequestError("Request body must contain an 'items' array with id and orderIndex");
+      }
+
+      const result = await categoryService.reorderCategories(items);
+      sendSuccess(res, result, "Categories reordered successfully");
+    } catch (error) {
+      next(error);
+    }
+  }
+
+  /**
+   * POST /api/categories/:parentId/subcategories/reorder
+   * Super Admin reorders L2 Subcategories under a Parent Category
+   */
+  async reorderSubcategories(req: AuthenticatedRequest, res: Response, next: NextFunction): Promise<void> {
+    try {
+      if (!req.user || req.user.role !== "super_admin") {
+        throw new ForbiddenError("Only Super Admins can reorder global subcategories");
+      }
+
+      const parentId = Number(req.params.parentId);
+      if (isNaN(parentId)) {
+        throw new BadRequestError("Invalid parent category ID");
+      }
+
+      const items = req.body.items;
+      if (!Array.isArray(items)) {
+        throw new BadRequestError("Request body must contain an 'items' array with id and orderIndex");
+      }
+
+      const result = await categoryService.reorderSubcategories(parentId, items);
+      sendSuccess(res, result, "Subcategories reordered successfully");
+    } catch (error) {
+      next(error);
+    }
+  }
+
+  /**
+   * Helper to verify shop ownership
+   */
+  private async verifyShopOwnership(req: AuthenticatedRequest, shopId: number): Promise<Shop> {
+    if (!req.user) {
+      throw new UnauthorizedError("Authentication is required");
+    }
+
+    const shop = await Shop.findByPk(shopId);
+    if (!shop) {
+      throw new NotFoundError(`Shop with ID ${shopId} not found`);
+    }
+
+    if (req.user.role !== "super_admin" && shop.ownerId !== req.user.id) {
+      throw new ForbiddenError("You do not have permission to manage this shop's configuration");
+    }
+
+    return shop;
+  }
+
+  /**
+   * GET /api/categories/shop/:shopId/subcategories
+   * (or /api/shops/:shopId/subcategories)
+   * Fetches shop's subcategories with custom ordering & visibility
+   */
+  async getShopSubcategories(req: Request, res: Response, next: NextFunction): Promise<void> {
+    try {
+      const shopId = Number(req.params.shopId);
+      if (isNaN(shopId)) {
+        throw new BadRequestError("Invalid shop ID");
+      }
+
+      const parentId = req.query.parentId ? Number(req.query.parentId) : undefined;
+      const subcats = await categoryService.getShopSubcategories(shopId, parentId);
+      const formatted = subcats.map((sub) => formatMediaUrls(sub));
+      sendSuccess(res, formatted, "Shop subcategories fetched successfully");
+    } catch (error) {
+      next(error);
+    }
+  }
+
+  /**
+   * PUT /api/categories/shop/:shopId/subcategories/:subcategoryId
+   * Updates visibility of a subcategory for this shop
+   */
+  async updateShopSubcategoryVisibility(req: AuthenticatedRequest, res: Response, next: NextFunction): Promise<void> {
+    try {
+      const shopId = Number(req.params.shopId);
+      const subcategoryId = Number(req.params.subcategoryId);
+
+      if (isNaN(shopId) || isNaN(subcategoryId)) {
+        throw new BadRequestError("Valid shopId and subcategoryId are required");
+      }
+
+      await this.verifyShopOwnership(req, shopId);
+
+      const isVisible = Boolean(req.body.isVisible);
+      const result = await categoryService.updateShopSubcategoryVisibility(shopId, subcategoryId, isVisible);
+      sendSuccess(res, result, `Subcategory visibility set to ${isVisible ? "enabled" : "disabled"}`);
+    } catch (error) {
+      next(error);
+    }
+  }
+
+  /**
+   * POST /api/categories/shop/:shopId/subcategories/reorder
+   * Reorders subcategories for this specific shop independently
+   */
+  async reorderShopSubcategories(req: AuthenticatedRequest, res: Response, next: NextFunction): Promise<void> {
+    try {
+      const shopId = Number(req.params.shopId);
+      if (isNaN(shopId)) {
+        throw new BadRequestError("Valid shop ID is required");
+      }
+
+      await this.verifyShopOwnership(req, shopId);
+
+      const items = req.body.items;
+      if (!Array.isArray(items)) {
+        throw new BadRequestError("Request body must contain an 'items' array with subcategoryId and sortOrder");
+      }
+
+      const result = await categoryService.reorderShopSubcategories(shopId, items);
+      sendSuccess(res, result, "Shop subcategories reordered successfully");
+    } catch (error) {
+      next(error);
+    }
+  }
+
+  /**
+   * POST /api/categories/shop/:shopId/subcategories/reset
+   * Resets shop's subcategory order to global default
+   */
+  async resetShopSubcategories(req: AuthenticatedRequest, res: Response, next: NextFunction): Promise<void> {
+    try {
+      const shopId = Number(req.params.shopId);
+      if (isNaN(shopId)) {
+        throw new BadRequestError("Valid shop ID is required");
+      }
+
+      await this.verifyShopOwnership(req, shopId);
+
+      const result = await categoryService.resetShopSubcategories(shopId);
+      sendSuccess(res, result, "Shop subcategories reset to default order");
     } catch (error) {
       next(error);
     }

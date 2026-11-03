@@ -1,9 +1,12 @@
 import { Op, literal } from "sequelize";
+import { sequelize } from "../../config/database";
 import { Product } from "./product.model";
 import { Shop } from "../shops/shop.model";
 import { Category } from "../categories/category.model";
-import { NotFoundError } from "../../core/errors/AppError";
+import { NotFoundError, BadRequestError } from "../../core/errors/AppError";
 import { storageService } from "../../core/storage/storage.service";
+import { uploadService } from "../upload/upload.service";
+import { ImageDeletionJob } from "../upload/imageDeletionJob.model";
 
 export interface ListProductsQuery {
   shopId?: number;
@@ -150,7 +153,10 @@ export class ProductService {
       include: [shopInclude, categoryInclude],
       limit,
       offset,
-      order: [["createdAt", "DESC"]],
+      order: [
+        ["sortOrder", "ASC"],
+        ["createdAt", "DESC"],
+      ],
     });
 
     return {
@@ -165,42 +171,47 @@ export class ProductService {
   }
 
   async findById(id: number): Promise<Product> {
-    const product = await Product.findByPk(id, {
-      include: [
-        {
-          model: Shop,
-          as: "shop",
-          attributes: [
-            "id",
-            "ownerId",
-            "name",
-            "slug",
-            "category",
-            "address",
-            "city",
-            "state",
-            "postalCode",
-            "latitude",
-            "longitude",
-            "phone",
-            "email",
-            "rating",
-            "reviewCount",
-            "isVerified",
-            "isOpen",
-            "openingHours",
-            "bannerUrl",
-            "logoUrl",
-          ],
-        },
-        {
-          model: Category,
-          as: "categoryRef",
-          attributes: ["id", "name", "slug", "icon", "emoji", "level", "parentId"],
-          required: false,
-        },
-      ],
-    });
+    const include = [
+      {
+        model: Shop,
+        as: "shop",
+        attributes: [
+          "id",
+          "ownerId",
+          "name",
+          "slug",
+          "category",
+          "address",
+          "city",
+          "state",
+          "postalCode",
+          "latitude",
+          "longitude",
+          "phone",
+          "email",
+          "rating",
+          "reviewCount",
+          "isVerified",
+          "isOpen",
+          "openingHours",
+          "bannerUrl",
+          "logoUrl",
+        ],
+      },
+      {
+        model: Category,
+        as: "categoryRef",
+        attributes: ["id", "name", "slug", "icon", "emoji", "level", "parentId"],
+        required: false,
+      },
+    ];
+
+    let product = await Product.findByPk(id, { include });
+    if (!product) {
+      // Wishlist & history protection: check soft-deleted products
+      product = await Product.findByPk(id, { include, paranoid: false });
+    }
+
     if (!product) {
       throw new NotFoundError(`Product with id ${id} not found`);
     }
@@ -266,11 +277,18 @@ export class ProductService {
           required: false,
         },
       ],
-      order: [["createdAt", "DESC"]],
+      order: [
+        ["sortOrder", "ASC"],
+        ["createdAt", "DESC"],
+      ],
     });
   }
 
   async create(data: CreateProductInput): Promise<Product> {
+    if (data.images && data.images.length > 3) {
+      throw new BadRequestError("A product can have a maximum of 3 images");
+    }
+
     let categoryName = data.category;
     let categoryId = data.categoryId ?? null;
 
@@ -284,10 +302,22 @@ export class ProductService {
       if (cat) categoryId = cat.id;
     }
 
+    // Default position at end of subcategory product sequence
+    const maxSortProduct = await Product.findOne({
+      where: {
+        shopId: data.shopId,
+        ...(categoryId ? { categoryId } : {}),
+      },
+      order: [["sortOrder", "DESC"]],
+      attributes: ["sortOrder"],
+    });
+    const defaultSortOrder = maxSortProduct ? (maxSortProduct.sortOrder || 0) + 1 : 1;
+
     const product = await Product.create({
       ...data,
       category: categoryName || "General",
       categoryId,
+      sortOrder: defaultSortOrder,
       stockQuantity: data.stockQuantity ?? 0,
       images: data.images ?? [],
       isAvailable: data.isAvailable ?? true,
@@ -298,16 +328,24 @@ export class ProductService {
       const finalImages: string[] = [];
       let imagesMoved = false;
 
-      for (const imgKey of data.images) {
-        if (imgKey && imgKey.includes("/products/temp/")) {
+      for (let i = 0; i < data.images.length; i++) {
+        const imgKey = data.images[i];
+        if (imgKey && (imgKey.includes("temp/uploads/") || imgKey.includes("/products/temp/"))) {
           try {
-            const filename = imgKey.split("/").pop() || "product.webp";
-            const permanentKey = `shops/${data.shopId}/products/${product.id}/${filename}`;
-            await storageService.moveObject(imgKey, permanentKey);
+            const imageId = `${Date.now()}_${i + 1}`;
+            const permanentKey = `products/${data.shopId}/${product.id}/${imageId}.webp`;
+            await uploadService.promoteUpload({
+              tempKeyOrId: imgKey,
+              targetPermanentKey: permanentKey,
+              entityType: "product",
+              entityId: product.id,
+              shopId: data.shopId,
+              imageRole: "product_gallery",
+            });
             finalImages.push(permanentKey);
             imagesMoved = true;
           } catch (moveErr) {
-            console.error(`Failed to move temp image [${imgKey}] to permanent location:`, moveErr);
+            console.error(`Failed to promote temp image [${imgKey}] to permanent location:`, moveErr);
             finalImages.push(imgKey);
           }
         } else {
@@ -329,7 +367,15 @@ export class ProductService {
       throw new NotFoundError(`Product with id ${id} not found`);
     }
 
+    if (data.images && data.images.length > 3) {
+      throw new BadRequestError("A product can have a maximum of 3 images");
+    }
+
+    const previousImages = Array.isArray(product.images) ? [...product.images] : [];
     const updateData = { ...data };
+
+    // Prevent regular product updates from resetting or corrupting sortOrder
+    delete (updateData as any).sortOrder;
 
     if (updateData.categoryId && !updateData.category) {
       const cat = await Category.findByPk(updateData.categoryId);
@@ -341,20 +387,38 @@ export class ProductService {
       if (cat) updateData.categoryId = cat.id;
     }
 
+    // If subcategory actually changed, place product at the end of the new subcategory sequence
+    if (updateData.categoryId && updateData.categoryId !== product.categoryId) {
+      const maxSortProduct = await Product.findOne({
+        where: { shopId: product.shopId, categoryId: updateData.categoryId },
+        order: [["sortOrder", "DESC"]],
+        attributes: ["sortOrder"],
+      });
+      (updateData as any).sortOrder = maxSortProduct ? (maxSortProduct.sortOrder || 0) + 1 : 1;
+    }
+
     if (updateData.images && updateData.images.length > 0) {
       const finalImages: string[] = [];
       let imagesMoved = false;
 
-      for (const imgKey of updateData.images) {
-        if (imgKey && imgKey.includes("/products/temp/")) {
+      for (let i = 0; i < updateData.images.length; i++) {
+        const imgKey = updateData.images[i];
+        if (imgKey && (imgKey.includes("temp/uploads/") || imgKey.includes("/products/temp/"))) {
           try {
-            const filename = imgKey.split("/").pop() || "product.webp";
-            const permanentKey = `shops/${product.shopId}/products/${product.id}/${filename}`;
-            await storageService.moveObject(imgKey, permanentKey);
+            const imageId = `${Date.now()}_${i + 1}`;
+            const permanentKey = `products/${product.shopId}/${product.id}/${imageId}.webp`;
+            await uploadService.promoteUpload({
+              tempKeyOrId: imgKey,
+              targetPermanentKey: permanentKey,
+              entityType: "product",
+              entityId: product.id,
+              shopId: product.shopId,
+              imageRole: "product_gallery",
+            });
             finalImages.push(permanentKey);
             imagesMoved = true;
           } catch (moveErr) {
-            console.error(`Failed to move temp image [${imgKey}] to permanent location:`, moveErr);
+            console.error(`Failed to promote temp image [${imgKey}] to permanent location:`, moveErr);
             finalImages.push(imgKey);
           }
         } else {
@@ -362,12 +426,33 @@ export class ProductService {
         }
       }
 
-      if (imagesMoved) {
-        updateData.images = finalImages;
-      }
+      updateData.images = finalImages;
     }
 
     await product.update(updateData);
+
+    // After successful update: identify any removed images and queue safe background deletion
+    if (updateData.images) {
+      const updatedKeys = new Set(updateData.images.map((k) => storageService.extractKeyFromUrl(k)));
+      for (const oldKey of previousImages) {
+        const cleanOld = storageService.extractKeyFromUrl(oldKey);
+        if (cleanOld && !updatedKeys.has(cleanOld) && cleanOld.startsWith("products/")) {
+          ImageDeletionJob.create({
+            objectKey: cleanOld,
+            entityType: "product",
+            entityId: product.id,
+            status: "pending",
+          })
+            .then((job) => {
+              void uploadService.executeDeletionJob(job.id);
+            })
+            .catch((err) => {
+              console.error("Failed to queue deletion job for removed product image:", err);
+            });
+        }
+      }
+    }
+
     return product;
   }
 
@@ -377,7 +462,95 @@ export class ProductService {
       throw new NotFoundError(`Product with id ${id} not found`);
     }
 
+    // Soft-delete using Sequelize paranoid pattern (sets deletedAt timestamp).
+    // IMPORTANT: Product images are intentionally NOT deleted from S3 so that
+    // existing customer wishlists and saved product histories continue to display seamlessly!
     await product.destroy();
+  }
+
+  /**
+   * Reorder products within a specific shop and subcategory
+   * Validates product ownership and subcategory association atomically in transaction.
+   */
+  async reorderProducts(
+    shopId: number,
+    categoryId: number,
+    items: Array<{ id: number; sortOrder: number }>
+  ): Promise<Product[]> {
+    if (!Array.isArray(items) || items.length === 0) {
+      throw new BadRequestError("Items array must be provided with at least one element");
+    }
+
+    const targetCategory = await Category.findByPk(categoryId);
+    if (!targetCategory) {
+      throw new NotFoundError(`Subcategory with ID ${categoryId} not found`);
+    }
+    if (targetCategory.level === 1) {
+      throw new BadRequestError("Products must be arranged under a specific L2 child subcategory, not an entire L1 department");
+    }
+
+    const idSet = new Set<number>();
+    for (const item of items) {
+      if (!item.id || typeof item.sortOrder !== "number") {
+        throw new BadRequestError("Each item must have a valid id and numeric sortOrder");
+      }
+      if (idSet.has(item.id)) {
+        throw new BadRequestError(`Duplicate product ID ${item.id} detected in reorder payload`);
+      }
+      idSet.add(item.id);
+    }
+
+    const products = await Product.findAll({
+      where: {
+        id: Array.from(idSet),
+        shopId,
+        [Op.or]: [
+          { categoryId },
+          { category: { [Op.iLike]: targetCategory.name.trim() } },
+        ],
+      },
+      attributes: ["id", "shopId", "categoryId", "category", "sortOrder"],
+    });
+
+    if (products.length !== idSet.size) {
+      throw new BadRequestError(
+        `All products must belong to shop ID ${shopId} and subcategory "${targetCategory.name}" (ID ${categoryId})`
+      );
+    }
+
+    await sequelize.transaction(async (t) => {
+      for (const item of items) {
+        await Product.update(
+          {
+            sortOrder: Math.max(0, Math.floor(item.sortOrder)),
+            categoryId, // Ensure categoryId is explicitly linked
+          },
+          { where: { id: item.id, shopId }, transaction: t }
+        );
+      }
+    });
+
+    return Product.findAll({
+      where: {
+        shopId,
+        [Op.or]: [
+          { categoryId },
+          { category: { [Op.iLike]: targetCategory.name.trim() } },
+        ],
+      },
+      include: [
+        {
+          model: Category,
+          as: "categoryRef",
+          attributes: ["id", "name", "slug", "icon", "emoji", "level", "parentId"],
+          required: false,
+        },
+      ],
+      order: [
+        ["sortOrder", "ASC"],
+        ["createdAt", "DESC"],
+      ],
+    });
   }
 }
 

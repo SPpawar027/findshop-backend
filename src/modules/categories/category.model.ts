@@ -22,6 +22,7 @@ export class Category extends Model<
   declare level: CreationOptional<number>;
   declare icon: string | null;
   declare emoji: string | null;
+  declare imageUrl: string | null;
   declare orderIndex: CreationOptional<number>;
   declare isActive: CreationOptional<boolean>;
   declare createdAt: CreationOptional<Date>;
@@ -76,6 +77,11 @@ Category.init(
       type: DataTypes.STRING(10),
       allowNull: true,
       defaultValue: "📦",
+    },
+    imageUrl: {
+      type: DataTypes.STRING(500),
+      allowNull: true,
+      field: "image_url",
     },
     orderIndex: {
       type: DataTypes.INTEGER,
