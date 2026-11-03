@@ -26,6 +26,14 @@ export function createApp(): express.Application {
   app.use(express.json());
   app.use(requestLogger);
 
+  // Normalize route prefix: automatically route both /endpoint and /api/endpoint
+  app.use((req, _res, next) => {
+    if (!req.url.startsWith("/api") && !req.url.startsWith("/knowbackend")) {
+      req.url = `/api${req.url.startsWith("/") ? "" : "/"}${req.url}`;
+    }
+    next();
+  });
+
   // Health check
   app.get("/api/health", (_req, res) => {
     res.json({
