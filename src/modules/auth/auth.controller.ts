@@ -89,6 +89,96 @@ export class AuthController {
       next(error);
     }
   }
+
+  async googleLogin(req: Request, res: Response, next: NextFunction): Promise<void> {
+    try {
+      const { idToken, token, expectedRole, portal } = req.body;
+      const targetToken = idToken || token;
+      if (!targetToken) {
+        throw new BadRequestError("Google ID token is required");
+      }
+
+      const targetRole = expectedRole || portal;
+      const result = await authService.googleLogin(targetToken, targetRole);
+      sendSuccess(res, result, "Google authentication successful");
+    } catch (error) {
+      next(error);
+    }
+  }
+
+  async verifyEmailOtp(req: Request, res: Response, next: NextFunction): Promise<void> {
+    try {
+      const { email, otp } = req.body;
+      if (!email || !otp) {
+        throw new BadRequestError("Email and 6-digit OTP code are required");
+      }
+      const result = await authService.verifyEmailOtp(email, otp);
+      sendSuccess(res, result, result.message);
+    } catch (error) {
+      next(error);
+    }
+  }
+
+  async resendEmailOtp(req: Request, res: Response, next: NextFunction): Promise<void> {
+    try {
+      const { email } = req.body;
+      if (!email) {
+        throw new BadRequestError("Email is required");
+      }
+      const result = await authService.resendEmailOtp(email);
+      sendSuccess(res, result, result.message);
+    } catch (error) {
+      next(error);
+    }
+  }
+
+  async resetPasswordWithOtp(req: Request, res: Response, next: NextFunction): Promise<void> {
+    try {
+      const { email, otp, newPassword } = req.body;
+      if (!email || !otp || !newPassword) {
+        throw new BadRequestError("Email, 6-digit OTP code, and new password are required");
+      }
+      const result = await authService.resetPasswordWithOtp(email, otp, newPassword);
+      sendSuccess(res, result, result.message);
+    } catch (error) {
+      next(error);
+    }
+  }
+
+  async setPassword(req: AuthenticatedRequest, res: Response, next: NextFunction): Promise<void> {
+    try {
+      if (!req.user) {
+        throw new BadRequestError("User authentication context missing");
+      }
+      const { newPassword } = req.body;
+      if (!newPassword) {
+        throw new BadRequestError("New password is required");
+      }
+      const result = await authService.setPassword(req.user.id, newPassword);
+      sendSuccess(res, result, result.message);
+    } catch (error) {
+      next(error);
+    }
+  }
+
+  async logout(req: Request, res: Response, next: NextFunction): Promise<void> {
+    try {
+      const refreshToken = req.body?.refreshToken || (req.headers["x-refresh-token"] as string | undefined);
+      const authReq = req as AuthenticatedRequest;
+      const userId = authReq.user?.id;
+
+      // Clear any potential authentication cookies across portals
+      res.clearCookie("fse_token", { path: "/" });
+      res.clearCookie("fse_refresh_token", { path: "/" });
+      res.clearCookie("token", { path: "/" });
+      res.clearCookie("refreshToken", { path: "/" });
+
+      const result = await authService.logout(userId, refreshToken);
+      sendSuccess(res, result, "Logged out successfully");
+    } catch (error) {
+      next(error);
+    }
+  }
 }
 
 export const authController = new AuthController();

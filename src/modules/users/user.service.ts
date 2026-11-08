@@ -7,6 +7,7 @@ export interface CreateUserInput {
   passwordHash: string;
   phone?: string | null;
   role?: UserRole;
+  searchRadiusKm?: number;
 }
 
 export class UserService {
@@ -65,11 +66,16 @@ export class UserService {
       }
     }
 
+    const radiusUpdate = data.searchRadiusKm !== undefined
+      ? Math.min(80, Math.max(1, Number(data.searchRadiusKm)))
+      : user.searchRadiusKm;
+
     await user.update({
       name: data.name ?? user.name,
       email: data.email ?? user.email,
       phone: data.phone !== undefined ? data.phone : user.phone,
       role: data.role ?? user.role,
+      searchRadiusKm: radiusUpdate,
       isActive: data.isActive !== undefined ? data.isActive : user.isActive,
     });
 

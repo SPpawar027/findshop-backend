@@ -32,7 +32,12 @@ export class ProductController {
       if (isNaN(id)) {
         throw new BadRequestError("Invalid product ID");
       }
-      const product = await productService.findById(id);
+      const userRole = (req as any).user?.role;
+      const allowSuspended =
+        req.query.allowSuspended === "true" ||
+        userRole === "super_admin" ||
+        userRole === "shop_admin";
+      const product = await productService.findById(id, allowSuspended);
       sendSuccess(res, formatMediaUrls(product), "Product fetched successfully");
     } catch (error) {
       next(error);
@@ -45,7 +50,12 @@ export class ProductController {
       if (!slug) {
         throw new BadRequestError("Slug parameter is required");
       }
-      const product = await productService.findBySlug(slug);
+      const userRole = (req as any).user?.role;
+      const allowSuspended =
+        req.query.allowSuspended === "true" ||
+        userRole === "super_admin" ||
+        userRole === "shop_admin";
+      const product = await productService.findBySlug(slug, allowSuspended);
       sendSuccess(res, formatMediaUrls(product), "Product fetched successfully");
     } catch (error) {
       next(error);
@@ -69,7 +79,15 @@ export class ProductController {
 
   async create(req: AuthenticatedRequest, res: Response, next: NextFunction): Promise<void> {
     try {
-      const product = await productService.create(req.body);
+      const productData = { ...req.body };
+      if (req.user && req.user.role === "shop_admin") {
+        const userShop = await Shop.findOne({ where: { ownerId: req.user.id } });
+        if (!userShop) {
+          throw new ForbiddenError("No shop found for your merchant account");
+        }
+        productData.shopId = userShop.id;
+      }
+      const product = await productService.create(productData);
       sendCreated(res, formatMediaUrls(product), "Product created successfully");
     } catch (error) {
       next(error);
@@ -81,6 +99,16 @@ export class ProductController {
       const id = Number(req.params.id);
       if (isNaN(id)) {
         throw new BadRequestError("Invalid product ID");
+      }
+      if (req.user && req.user.role === "shop_admin") {
+        const userShop = await Shop.findOne({ where: { ownerId: req.user.id } });
+        if (!userShop) {
+          throw new ForbiddenError("No shop found for your merchant account");
+        }
+        const existing = await productService.findById(id);
+        if (existing.shopId !== userShop.id) {
+          throw new ForbiddenError("You do not have permission to update this product");
+        }
       }
       const product = await productService.update(id, req.body);
       sendSuccess(res, formatMediaUrls(product), "Product updated successfully");
@@ -94,6 +122,16 @@ export class ProductController {
       const id = Number(req.params.id);
       if (isNaN(id)) {
         throw new BadRequestError("Invalid product ID");
+      }
+      if (req.user && req.user.role === "shop_admin") {
+        const userShop = await Shop.findOne({ where: { ownerId: req.user.id } });
+        if (!userShop) {
+          throw new ForbiddenError("No shop found for your merchant account");
+        }
+        const existing = await productService.findById(id);
+        if (existing.shopId !== userShop.id) {
+          throw new ForbiddenError("You do not have permission to delete this product");
+        }
       }
       await productService.delete(id);
       sendSuccess(res, null, "Product deleted successfully");

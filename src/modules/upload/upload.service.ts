@@ -38,6 +38,16 @@ export class UploadService {
    * Verifies that the authenticated user owns the specified shop (or has super_admin role).
    */
   private async verifyShopOwnership(user: AuthenticatedUser, shopId: number): Promise<Shop> {
+    // If user is a merchant (shop_admin), auto-resolve or verify their owned shop
+    if (user.role === "shop_admin") {
+      const userShop = await Shop.findOne({ where: { ownerId: user.id } });
+      if (!userShop) {
+        throw new ForbiddenError("No shop found for your merchant account");
+      }
+      // If frontend sent a fallback shopId or matches userShop, return the merchant's real shop
+      return userShop;
+    }
+
     const shop = await Shop.findByPk(shopId);
     if (!shop) {
       throw new NotFoundError(`Shop with id ${shopId} not found`);
@@ -105,8 +115,8 @@ export class UploadService {
   ): Promise<PresignedUrlResponse> {
     const { entityType, shopId, productId, fileName, contentType, fileSize } = input;
 
-    if (!entityType || !shopId || !fileName || !contentType) {
-      throw new BadRequestError("entityType, shopId, fileName, and contentType are required");
+    if (!entityType || !fileName || !contentType) {
+      throw new BadRequestError("entityType, fileName, and contentType are required");
     }
 
     const validTypes: ImageEntityType[] = ["shop-banner", "shop-logo", "product-image"];
@@ -114,8 +124,9 @@ export class UploadService {
       throw new BadRequestError(`Invalid entityType. Must be one of: ${validTypes.join(", ")}`);
     }
 
-    // Verify ownership
-    await this.verifyShopOwnership(user, Number(shopId));
+    // Verify ownership and resolve effective shop
+    const verifiedShop = await this.verifyShopOwnership(user, Number(shopId || 0));
+    const effectiveShopId = verifiedShop.id;
 
     // Verify product ownership if productId provided
     if (productId) {
@@ -123,8 +134,8 @@ export class UploadService {
       if (!product) {
         throw new NotFoundError(`Product with id ${productId} not found`);
       }
-      if (product.shopId !== Number(shopId)) {
-        throw new BadRequestError(`Product ${productId} does not belong to shop ${shopId}`);
+      if (product.shopId !== effectiveShopId) {
+        throw new BadRequestError(`Product ${productId} does not belong to shop ${effectiveShopId}`);
       }
     }
 
@@ -139,13 +150,13 @@ export class UploadService {
     }
 
     // Enforce limits
-    await this.enforceUploadLimits(entityType, Number(shopId), productId ? Number(productId) : undefined, user.id);
+    await this.enforceUploadLimits(entityType, effectiveShopId, productId ? Number(productId) : undefined, user.id);
 
     // Generate unique uploadId & presigned URL
     const presigned = await storageService.getPresignedUploadUrl({
       entityType,
       userId: user.id,
-      shopId: Number(shopId),
+      shopId: effectiveShopId,
       productId: productId ? Number(productId) : undefined,
       fileName,
       contentType: "image/webp",
@@ -163,7 +174,7 @@ export class UploadService {
     await TemporaryUpload.create({
       id: presigned.uploadId,
       userId: user.id,
-      shopId: Number(shopId),
+      shopId: effectiveShopId,
       productId: productId ? Number(productId) : null,
       objectKey: presigned.storageKey,
       originalName: fileName,

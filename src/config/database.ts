@@ -16,7 +16,7 @@ export const sequelize = new Sequelize(databaseUrl, {
   pool: {
     max: 10,
     min: 0,
-    acquire: 10000,
+    acquire: 30000,
     idle: 10000,
   },
   dialectOptions: isLocal
@@ -24,7 +24,7 @@ export const sequelize = new Sequelize(databaseUrl, {
       connectTimeout: 5000,
     }
     : {
-      connectTimeout: 5000,
+      connectTimeout: 20000,
       ssl: {
         require: true,
         rejectUnauthorized: false,

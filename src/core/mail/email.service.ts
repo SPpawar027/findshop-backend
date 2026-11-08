@@ -16,6 +16,14 @@ export interface SendPasswordResetInput {
   tokenExpiresMinutes?: number;
 }
 
+export interface SendOtpInput {
+  to: string;
+  userName: string;
+  otp: string;
+  type: "verification" | "password_reset";
+  expiresMinutes?: number;
+}
+
 export interface EmailSendResult {
   success: boolean;
   delivered: boolean;
@@ -512,6 +520,148 @@ The FindShopEasily Team
     } catch (err: unknown) {
       const errorMessage = err instanceof Error ? err.message : String(err);
       console.error(`[EmailService] Error sending password reset email to ${to}:`, errorMessage);
+      return {
+        success: false,
+        delivered: false,
+        simulated: false,
+        error: errorMessage,
+      };
+    }
+  }
+
+  /**
+   * Dispatches a 6-digit OTP code for email verification or password reset.
+   * If SMTP is not yet configured, prints the OTP prominently in console for immediate testing.
+   */
+  async sendOtpEmail(data: SendOtpInput): Promise<EmailSendResult> {
+    const { to, userName, otp, type, expiresMinutes = 10 } = data;
+    const isVerification = type === "verification";
+    const subject = isVerification
+      ? `${otp} is your FindShopEasily verification code`
+      : `${otp} is your FindShopEasily password reset code`;
+
+    const title = isVerification ? "Verify Your Email Address" : "Password Reset Request";
+    const message = isVerification
+      ? "Thank you for registering with FindShopEasily. Please enter the verification code below in the app or website to confirm your email address:"
+      : "We received a request to reset your password. Please enter the verification code below to verify your identity and set a new password:";
+
+    const fromAddress =
+      process.env.SMTP_FROM ||
+      (process.env.SMTP_USER
+        ? `"FindShopEasily" <${process.env.SMTP_USER}>`
+        : '"FindShopEasily" <no-reply@findshopeasily.com>');
+
+    if (!this.isConfigured || !this.transporter) {
+      this.initTransporter();
+    }
+
+    if (!this.isConfigured || !this.transporter) {
+      console.log(`
+┌────────────────────────────────────────────────────────────────────────┐
+│ [FindShopEasily Mailer] SIMULATED OTP CODE (Fastest Dev Mode)          │
+├────────────────────────────────────────────────────────────────────────┤
+│ To:           ${to}
+│ Purpose:      ${isVerification ? "EMAIL VERIFICATION" : "PASSWORD RESET"}
+│ User Name:    ${userName}
+│ ONE-TIME CODE: >>> [ ${otp} ] <<<
+│ Validity:     ${expiresMinutes} minutes
+├────────────────────────────────────────────────────────────────────────┤
+│ Note: Enter this OTP directly in the App / Website to complete flow.   │
+│ Set SMTP_HOST or AWS SES credentials in .env to dispatch live emails.  │
+└────────────────────────────────────────────────────────────────────────┘
+      `);
+
+      return {
+        success: true,
+        delivered: false,
+        simulated: true,
+      };
+    }
+
+    const digits = otp.split("");
+    const digitsHtml = digits
+      .map(
+        (d) =>
+          `<span style="display:inline-block; width:38px; height:46px; line-height:46px; text-align:center; background:#F4F1EA; border:1.5px solid #344F1F; border-radius:8px; font-size:24px; font-weight:800; color:#344F1F; margin:0 4px; font-family:'Courier New', monospace;">${d}</span>`
+      )
+      .join("");
+
+    const htmlContent = `
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>${subject}</title>
+  <style>
+    body { margin: 0; padding: 0; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; background-color: #F9F5F0; color: #1F2937; line-height: 1.6; }
+    .wrapper { width: 100%; background-color: #F9F5F0; padding: 32px 12px; }
+    .card { max-width: 540px; margin: 0 auto; background: #FFFFFF; border-radius: 20px; border: 1px solid #E8E1D5; overflow: hidden; box-shadow: 0 4px 20px rgba(52, 79, 31, 0.08); }
+    .header { background: linear-gradient(135deg, #344F1F 0%, #243815 100%); padding: 32px 24px; text-align: center; color: #FFFFFF; }
+    .header h1 { margin: 0 0 6px 0; font-size: 22px; font-weight: 800; letter-spacing: -0.5px; }
+    .content { padding: 32px 28px; text-align: center; }
+    .otp-box { margin: 28px 0; padding: 18px 12px; background: #FAF8F5; border-radius: 14px; border: 1px dashed #D3E2C4; display: inline-block; }
+    .footer { font-size: 12px; color: #6B7280; text-align: center; margin-top: 24px; border-top: 1px solid #F3F4F6; padding-top: 16px; }
+  </style>
+</head>
+<body>
+  <div class="wrapper">
+    <div class="card">
+      <div class="header">
+        <h1>${title}</h1>
+      </div>
+      <div class="content">
+        <p style="text-align: left;">Hello <strong>${userName}</strong>,</p>
+        <p style="text-align: left; font-size: 14px; color: #4B5563;">${message}</p>
+        <div class="otp-box">
+          ${digitsHtml}
+        </div>
+        <p style="font-size: 13px; color: #6B7280; margin: 16px 0 0 0;">
+          This verification code is valid for <strong>${expiresMinutes} minutes</strong>. Never share this code with anyone.
+        </p>
+        <div class="footer">
+          <p>FindShopEasily &copy; 2026. All rights reserved.</p>
+        </div>
+      </div>
+    </div>
+  </div>
+</body>
+</html>
+    `.trim();
+
+    const textContent = `
+Hello ${userName},
+
+${message}
+
+YOUR ONE-TIME VERIFICATION CODE:
+${otp}
+
+This code expires in ${expiresMinutes} minutes. If you did not request this, please ignore this email.
+
+Best regards,
+The FindShopEasily Team
+    `.trim();
+
+    try {
+      const info = await this.transporter.sendMail({
+        from: fromAddress,
+        to,
+        subject,
+        text: textContent,
+        html: htmlContent,
+      });
+
+      console.log(`[EmailService] OTP email dispatched to ${to}. MessageId: ${info.messageId}`);
+      return {
+        success: true,
+        delivered: true,
+        simulated: false,
+        messageId: info.messageId,
+      };
+    } catch (err: unknown) {
+      const errorMessage = err instanceof Error ? err.message : String(err);
+      console.error(`[EmailService] Error dispatching OTP email to ${to}:`, errorMessage);
       return {
         success: false,
         delivered: false,

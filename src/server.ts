@@ -15,9 +15,28 @@ async function startServer(): Promise<void> {
     console.log(`========================================\n`);
 
     console.log("Connecting to PostgreSQL...");
-    // Verify database connection and models
-    await sequelize.authenticate();
-    console.log("✅ PostgreSQL connection established successfully.");
+    // Verify database connection with automatic retry for serverless wake-up
+    const maxRetries = 5;
+    let attempt = 0;
+    while (attempt < maxRetries) {
+      try {
+        await sequelize.authenticate();
+        console.log("✅ PostgreSQL connection established successfully.");
+        break;
+      } catch (dbErr) {
+        attempt += 1;
+        if (attempt >= maxRetries) {
+          throw dbErr;
+        }
+        console.warn(`⚠️ PostgreSQL connection attempt ${attempt}/${maxRetries} failed: ${(dbErr as Error).message}. Retrying in 2.5s (waking serverless compute)...`);
+        await new Promise((res) => setTimeout(res, 2500));
+      }
+    }
+
+    // Ensure User searchRadiusKm preference column exists in database
+    await sequelize
+      .query(`ALTER TABLE "users" ADD COLUMN IF NOT EXISTS "searchRadiusKm" INTEGER DEFAULT 10;`)
+      .catch((err) => console.warn("Notice: users.searchRadiusKm column check:", (err as Error).message));
 
     // Ensure Category table and standard MVP 5-sector categories are seeded
     await categoryService.ensureDefaultCategories();

@@ -29,6 +29,9 @@ export interface ListShopsQuery {
   lat?: number;
   lng?: number;
   radiusKm?: number;
+  status?: string;
+  activeOnly?: boolean | string;
+  excludeSuspended?: boolean | string;
 }
 
 export interface NearbyShopsQuery {
@@ -81,6 +84,7 @@ export interface ShopDetailQuery {
   availableOnly?: boolean;
   productsLimit?: number;
   productsPage?: number;
+  allowSuspended?: boolean;
 }
 
 export interface ShopDetailResponse {
@@ -139,10 +143,33 @@ export interface ShopDetailResponse {
 export class ShopService {
   async findAll(query: ListShopsQuery = {}) {
     const page = Math.max(1, Number(query.page || 1));
-    const limit = Math.min(50, Math.max(1, Number(query.limit || 20)));
+    const limit = Math.min(100, Math.max(1, Number(query.limit || 20)));
     const offset = (page - 1) * limit;
 
     const where: Record<string, unknown> = {};
+
+    // Status filter: Public consumers only see open & verified shops.
+    // SuperAdmin or admin consoles explicitly pass status="all" to see all shops including suspended.
+    const statusParam = (query.status || "").toLowerCase().trim();
+    const isActiveOnly =
+      query.activeOnly === true ||
+      query.activeOnly === "true" ||
+      query.excludeSuspended === true ||
+      query.excludeSuspended === "true" ||
+      statusParam === "active";
+
+    if (isActiveOnly) {
+      where.isOpen = true;
+      where.isVerified = true;
+    } else if (statusParam === "suspended") {
+      where.isOpen = false;
+    } else if (statusParam === "pending" || statusParam === "pending_approval") {
+      where.isVerified = false;
+    } else if (statusParam !== "all") {
+      // Safe default for website/mobile app: exclude suspended and unverified shops
+      where.isOpen = true;
+      where.isVerified = true;
+    }
 
     if (query.category) {
       where.category = query.category;
@@ -253,6 +280,11 @@ export class ShopService {
 
     if (!shop) {
       throw new NotFoundError(`Shop '${identifier}' not found`);
+    }
+
+    // If shop is suspended or unverified, hide from public website/customer queries
+    if (!query.allowSuspended && (!shop.isOpen || !shop.isVerified)) {
+      throw new NotFoundError(`This shop is currently inactive or suspended.`);
     }
 
     // 1. Fetch filtered products for this shop and gather catalog categories
@@ -400,17 +432,22 @@ export class ShopService {
       attributes: {
         include: [[distanceLiteral, "distanceKm"]],
       },
-      where: literal(`
-        (6371 * acos(
-          least(1.0, greatest(-1.0,
-            cos(radians(${Number(latitude)})) * cos(radians(latitude)) *
-            cos(radians(longitude) - radians(${Number(longitude)})) +
-            sin(radians(${Number(latitude)})) * sin(radians(latitude))
-          ))
-        )) <= ${Number(radiusKm)}
-      `),
+      where: {
+        [Op.and]: [
+          { isOpen: true, isVerified: true },
+          literal(`
+            (6371 * acos(
+              least(1.0, greatest(-1.0,
+                cos(radians(${Number(latitude)})) * cos(radians(latitude)) *
+                cos(radians(longitude) - radians(${Number(longitude)})) +
+                sin(radians(${Number(latitude)})) * sin(radians(latitude))
+              ))
+            )) <= ${Number(radiusKm)}
+          `),
+        ],
+      },
       order: literal(`"distanceKm" ASC`),
-      limit: Math.min(50, limit),
+      limit: Math.min(100, Number(limit || 20)),
     });
 
     return shops;
@@ -502,59 +539,95 @@ export class ShopService {
     }
 
     const updateData = { ...data };
-    const oldLogo = shop.logoUrl;
-    const oldBanner = shop.bannerUrl;
+    const oldLogoClean = shop.logoUrl ? storageService.extractKeyFromUrl(shop.logoUrl) : null;
+    const oldBannerClean = shop.bannerUrl ? storageService.extractKeyFromUrl(shop.bannerUrl) : null;
 
     // Promote new logo if uploaded to temporary storage
-    if (updateData.logoUrl && updateData.logoUrl.includes("temp/uploads/")) {
-      try {
-        const permanentLogoKey = `shops/${shop.id}/logo.webp`;
-        await uploadService.promoteUpload({
-          tempKeyOrId: updateData.logoUrl,
-          targetPermanentKey: permanentLogoKey,
-          entityType: "shop",
-          entityId: shop.id,
-          shopId: shop.id,
-          imageRole: "logo",
-        });
-        updateData.logoUrl = permanentLogoKey;
-      } catch (err: any) {
-        console.error(`Failed to promote shop logo [${updateData.logoUrl}]:`, err?.message);
+    if (updateData.logoUrl !== undefined) {
+      if (!updateData.logoUrl) {
+        updateData.logoUrl = null as any;
+      } else {
+        const cleanLogoKey = storageService.extractKeyFromUrl(updateData.logoUrl);
+        if (cleanLogoKey.includes("temp/uploads/") || cleanLogoKey.startsWith("temp/")) {
+          try {
+            const permanentLogoKey = `shops/${shop.id}/logo.webp`;
+            await uploadService.promoteUpload({
+              tempKeyOrId: cleanLogoKey,
+              targetPermanentKey: permanentLogoKey,
+              entityType: "shop",
+              entityId: shop.id,
+              shopId: shop.id,
+              imageRole: "logo",
+            });
+            updateData.logoUrl = permanentLogoKey;
+          } catch (err: any) {
+            console.error(`Failed to promote shop logo [${cleanLogoKey}]:`, err?.message);
+          }
+        } else {
+          // Keep clean relative storage key
+          updateData.logoUrl = cleanLogoKey;
+        }
       }
     }
 
     // Promote new banner if uploaded to temporary storage
-    if (updateData.bannerUrl && updateData.bannerUrl.includes("temp/uploads/")) {
-      try {
-        const permanentBannerKey = `shops/${shop.id}/banner.webp`;
-        await uploadService.promoteUpload({
-          tempKeyOrId: updateData.bannerUrl,
-          targetPermanentKey: permanentBannerKey,
-          entityType: "shop",
-          entityId: shop.id,
-          shopId: shop.id,
-          imageRole: "banner",
-        });
-        updateData.bannerUrl = permanentBannerKey;
-      } catch (err: any) {
-        console.error(`Failed to promote shop banner [${updateData.bannerUrl}]:`, err?.message);
+    if (updateData.bannerUrl !== undefined) {
+      if (!updateData.bannerUrl) {
+        updateData.bannerUrl = null as any;
+      } else {
+        const cleanBannerKey = storageService.extractKeyFromUrl(updateData.bannerUrl);
+        if (cleanBannerKey.includes("temp/uploads/") || cleanBannerKey.startsWith("temp/")) {
+          try {
+            const permanentBannerKey = `shops/${shop.id}/banner.webp`;
+            await uploadService.promoteUpload({
+              tempKeyOrId: cleanBannerKey,
+              targetPermanentKey: permanentBannerKey,
+              entityType: "shop",
+              entityId: shop.id,
+              shopId: shop.id,
+              imageRole: "banner",
+            });
+            updateData.bannerUrl = permanentBannerKey;
+          } catch (err: any) {
+            console.error(`Failed to promote shop banner [${cleanBannerKey}]:`, err?.message);
+          }
+        } else {
+          // Keep clean relative storage key
+          updateData.bannerUrl = cleanBannerKey;
+        }
       }
     }
 
     await shop.update(updateData);
 
-    // If logo was replaced with a different custom key, schedule safe deletion of old logo
-    if (updateData.logoUrl && oldLogo && oldLogo !== updateData.logoUrl && oldLogo.startsWith("shops/")) {
-      storageService.deleteObject(oldLogo).catch((delErr) => {
-        console.warn(`[Storage Warning] Failed to delete replaced logo [${oldLogo}]:`, delErr?.message);
-      });
+    // If logo was explicitly removed or changed to a different key, safely delete old key
+    const newLogoClean = updateData.logoUrl ? storageService.extractKeyFromUrl(updateData.logoUrl) : null;
+    if (
+      oldLogoClean &&
+      oldLogoClean.startsWith("shops/") &&
+      updateData.logoUrl !== undefined &&
+      oldLogoClean !== newLogoClean
+    ) {
+      if (oldLogoClean !== `shops/${shop.id}/logo.webp`) {
+        storageService.deleteObject(oldLogoClean).catch((delErr) => {
+          console.warn(`[Storage Warning] Failed to delete replaced logo [${oldLogoClean}]:`, delErr?.message);
+        });
+      }
     }
 
-    // If banner was replaced with a different custom key, schedule safe deletion of old banner
-    if (updateData.bannerUrl && oldBanner && oldBanner !== updateData.bannerUrl && oldBanner.startsWith("shops/")) {
-      storageService.deleteObject(oldBanner).catch((delErr) => {
-        console.warn(`[Storage Warning] Failed to delete replaced banner [${oldBanner}]:`, delErr?.message);
-      });
+    // If banner was explicitly removed or changed to a different key, safely delete old key
+    const newBannerClean = updateData.bannerUrl ? storageService.extractKeyFromUrl(updateData.bannerUrl) : null;
+    if (
+      oldBannerClean &&
+      oldBannerClean.startsWith("shops/") &&
+      updateData.bannerUrl !== undefined &&
+      oldBannerClean !== newBannerClean
+    ) {
+      if (oldBannerClean !== `shops/${shop.id}/banner.webp`) {
+        storageService.deleteObject(oldBannerClean).catch((delErr) => {
+          console.warn(`[Storage Warning] Failed to delete replaced banner [${oldBannerClean}]:`, delErr?.message);
+        });
+      }
     }
 
     return shop;

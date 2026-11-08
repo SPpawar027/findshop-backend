@@ -12,6 +12,7 @@ import { locationRouter } from "./modules/locations/location.routes";
 import { categoryRouter } from "./modules/categories/category.routes";
 import { reviewRouter } from "./modules/reviews/review.routes";
 import { analyticsRouter } from "./modules/analytics/analytics.routes";
+import { dashboardRouter } from "./modules/dashboard/dashboard.routes";
 import { requestLogger } from "./core/middlewares/requestLogger";
 import { errorHandler } from "./core/middlewares/errorHandler";
 import { NotFoundError } from "./core/errors/AppError";
@@ -71,6 +72,7 @@ export function createApp(): express.Application {
   app.use("/api/app-version", appVersionRouter);
   app.use("/api/reviews", reviewRouter);
   app.use("/api/analytics", analyticsRouter);
+  app.use("/api/dashboard", dashboardRouter);
 
   // 404 handler for unknown routes
   app.use((_req, _res, next) => {

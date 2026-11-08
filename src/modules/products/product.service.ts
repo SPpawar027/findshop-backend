@@ -86,9 +86,18 @@ export class ProductService {
       ];
     }
 
+    const shopWhere: Record<string, unknown> = {};
+    if (!query.shopId) {
+      // Public consumer queries: Exclude products from suspended or unverified stores
+      shopWhere.isOpen = true;
+      shopWhere.isVerified = true;
+    }
+
     const shopInclude: any = {
       model: Shop,
       as: "shop",
+      required: !query.shopId,
+      where: Object.keys(shopWhere).length > 0 ? shopWhere : undefined,
       attributes: [
         "id",
         "name",
@@ -129,7 +138,7 @@ export class ProductService {
 
       if (query.radiusKm && !isNaN(Number(query.radiusKm))) {
         const radius = Number(query.radiusKm);
-        shopInclude.where = literal(`
+        const radiusCondition = literal(`
           (6371 * acos(
             least(1.0, greatest(-1.0,
               cos(radians(${lat})) * cos(radians("shop"."latitude")) *
@@ -138,6 +147,13 @@ export class ProductService {
             ))
           )) <= ${radius}
         `);
+        if (shopInclude.where) {
+          shopInclude.where = {
+            [Op.and]: [shopInclude.where, radiusCondition],
+          };
+        } else {
+          shopInclude.where = radiusCondition;
+        }
       }
     }
 
@@ -170,7 +186,7 @@ export class ProductService {
     };
   }
 
-  async findById(id: number): Promise<Product> {
+  async findById(id: number, allowSuspended: boolean = false): Promise<Product> {
     const include = [
       {
         model: Shop,
@@ -215,10 +231,15 @@ export class ProductService {
     if (!product) {
       throw new NotFoundError(`Product with id ${id} not found`);
     }
+
+    if (!allowSuspended && product.shop && (!product.shop.isOpen || !product.shop.isVerified)) {
+      throw new NotFoundError("This product is currently unavailable because the retailer store is inactive or suspended.");
+    }
+
     return product;
   }
 
-  async findBySlug(slug: string): Promise<Product> {
+  async findBySlug(slug: string, allowSuspended: boolean = false): Promise<Product> {
     const product = await Product.findOne({
       where: { slug },
       include: [
@@ -259,6 +280,11 @@ export class ProductService {
     if (!product) {
       throw new NotFoundError(`Product with slug '${slug}' not found`);
     }
+
+    if (!allowSuspended && product.shop && (!product.shop.isOpen || !product.shop.isVerified)) {
+      throw new NotFoundError("This product is currently unavailable because the retailer store is inactive or suspended.");
+    }
+
     return product;
   }
 

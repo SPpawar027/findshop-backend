@@ -35,6 +35,20 @@ export class UserController {
     }
   }
 
+  async updateProfile(req: Request, res: Response, next: NextFunction): Promise<void> {
+    try {
+      const authReq = req as any;
+      const id = Number(authReq.user?.id);
+      if (!id || isNaN(id)) {
+        throw new BadRequestError("User authentication required");
+      }
+      const user = await userService.update(id, req.body);
+      sendSuccess(res, user, "Profile updated successfully");
+    } catch (error) {
+      next(error);
+    }
+  }
+
   async delete(req: Request, res: Response, next: NextFunction): Promise<void> {
     try {
       const id = Number(req.params.id);

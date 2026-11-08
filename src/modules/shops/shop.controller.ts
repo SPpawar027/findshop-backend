@@ -31,6 +31,12 @@ export class ShopController {
         throw new BadRequestError("Shop identifier (ID or slug) is required");
       }
 
+      const userRole = (req as any).user?.role;
+      const allowSuspended =
+        req.query.allowSuspended === "true" ||
+        userRole === "super_admin" ||
+        userRole === "shop_admin";
+
       const query = {
         lat: req.query.lat !== undefined ? Number(req.query.lat) : undefined,
         lng: req.query.lng !== undefined ? Number(req.query.lng) : undefined,
@@ -44,6 +50,7 @@ export class ShopController {
         availableOnly: req.query.availableOnly === "true",
         productsLimit: req.query.productsLimit ? Number(req.query.productsLimit) : undefined,
         productsPage: req.query.productsPage ? Number(req.query.productsPage) : undefined,
+        allowSuspended,
       };
 
       const shop = await shopService.getDetail(identifier, query);
@@ -61,6 +68,12 @@ export class ShopController {
         throw new BadRequestError("Shop ID is required");
       }
 
+      const userRole = (req as any).user?.role;
+      const allowSuspended =
+        req.query.allowSuspended === "true" ||
+        userRole === "super_admin" ||
+        userRole === "shop_admin";
+
       const query = {
         lat: req.query.lat !== undefined ? Number(req.query.lat) : undefined,
         lng: req.query.lng !== undefined ? Number(req.query.lng) : undefined,
@@ -74,6 +87,7 @@ export class ShopController {
         availableOnly: req.query.availableOnly === "true",
         productsLimit: req.query.productsLimit ? Number(req.query.productsLimit) : undefined,
         productsPage: req.query.productsPage ? Number(req.query.productsPage) : undefined,
+        allowSuspended,
       };
 
       const shop = await shopService.getDetail(id, query);
@@ -90,6 +104,12 @@ export class ShopController {
         throw new BadRequestError("Slug parameter is required");
       }
 
+      const userRole = (req as any).user?.role;
+      const allowSuspended =
+        req.query.allowSuspended === "true" ||
+        userRole === "super_admin" ||
+        userRole === "shop_admin";
+
       const query = {
         lat: req.query.lat !== undefined ? Number(req.query.lat) : undefined,
         lng: req.query.lng !== undefined ? Number(req.query.lng) : undefined,
@@ -103,6 +123,7 @@ export class ShopController {
         availableOnly: req.query.availableOnly === "true",
         productsLimit: req.query.productsLimit ? Number(req.query.productsLimit) : undefined,
         productsPage: req.query.productsPage ? Number(req.query.productsPage) : undefined,
+        allowSuspended,
       };
 
       const shop = await shopService.getDetail(slug, query);
@@ -115,22 +136,28 @@ export class ShopController {
   async getNearby(req: Request, res: Response, next: NextFunction): Promise<void> {
     try {
       const { lat, lng, radius, limit } = req.query;
-      if (!lat || !lng) {
-        throw new BadRequestError("Latitude ('lat') and Longitude ('lng') are required query parameters");
+      const parsedLimit = Math.min(100, Math.max(1, Number(limit || 20)));
+
+      // If lat/lng are omitted, return general active and verified shops instead of failing
+      if (!lat || !lng || isNaN(Number(lat)) || isNaN(Number(lng))) {
+        const result = await shopService.findAll({
+          limit: parsedLimit,
+          status: "active",
+          activeOnly: true,
+        });
+        const formattedShops = result.shops.map((s) => formatMediaUrls(s));
+        sendSuccess(res, formattedShops, "General shops fetched successfully (location omitted)", 200, result.meta);
+        return;
       }
 
       const latitude = Number(lat);
       const longitude = Number(lng);
 
-      if (isNaN(latitude) || isNaN(longitude)) {
-        throw new BadRequestError("Invalid latitude or longitude values");
-      }
-
       const shops = await shopService.findNearby({
         latitude,
         longitude,
         radiusKm: radius ? Number(radius) : undefined,
-        limit: limit ? Number(limit) : undefined,
+        limit: parsedLimit,
       });
 
       const formattedShops = shops.map((s) => formatMediaUrls(s));
