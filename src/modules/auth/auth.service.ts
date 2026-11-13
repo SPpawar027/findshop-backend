@@ -11,6 +11,18 @@ import { emailService } from "../../core/mail/email.service";
 const JWT_SECRET = process.env.JWT_SECRET || "findshop_jwt_secret_dev_key_change_in_prod";
 const JWT_REFRESH_SECRET = process.env.JWT_REFRESH_SECRET || `${JWT_SECRET}_refresh_key_v1`;
 
+// Cached OAuth2Client singleton: preserves Google's public JWKS certificates in memory
+// so verifyIdToken does sub-millisecond local in-memory cryptographic verification
+let sharedOAuth2Client: OAuth2Client | null = null;
+function getSharedOAuth2Client(): OAuth2Client {
+  if (!sharedOAuth2Client) {
+    sharedOAuth2Client = new OAuth2Client(
+      process.env.GOOGLE_CLIENT_ID || process.env.GOOGLE_WEB_CLIENT_ID || ""
+    );
+  }
+  return sharedOAuth2Client;
+}
+
 export interface RegisterInput {
   name: string;
   email: string;
@@ -606,7 +618,7 @@ export class AuthService {
     // 1. If Google credentials are configured and not an explicit dev mock token, verify via official Google OIDC
     if (hasGoogleConfig && !isMockToken && idToken.split(".").length === 3) {
       try {
-        const client = new OAuth2Client(process.env.GOOGLE_CLIENT_ID || process.env.GOOGLE_WEB_CLIENT_ID || "");
+        const client = getSharedOAuth2Client();
         const ticket = await client.verifyIdToken({
           idToken,
           audience: audience.length > 0 ? audience : undefined,
@@ -691,13 +703,27 @@ export class AuthService {
 
     // 1. Lookup user by googleId
     let user = await User.findOne({ where: { googleId: payload.sub } });
+    if (user) {
+      let needsSave = false;
+      if (payload.picture && user.avatarUrl !== payload.picture) {
+        user.avatarUrl = payload.picture;
+        needsSave = true;
+      }
+      if (payload.name && !user.name) {
+        user.name = payload.name;
+        needsSave = true;
+      }
+      if (needsSave) {
+        await user.save();
+      }
+    }
 
     // 2. If not found by googleId, lookup by email (Account Linking)
     if (!user) {
       user = await User.findOne({ where: { email: normalizedEmail } });
       if (user) {
         user.googleId = payload.sub;
-        if (!user.avatarUrl && payload.picture) {
+        if (payload.picture && user.avatarUrl !== payload.picture) {
           user.avatarUrl = payload.picture;
         }
         user.isEmailVerified = true;

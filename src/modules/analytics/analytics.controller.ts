@@ -11,7 +11,7 @@ export class AnalyticsController {
    */
   async trackEvent(req: AuthenticatedRequest, res: Response, next: NextFunction): Promise<void> {
     try {
-      const { shopId, eventType, productId, visitorId, platform, metadata } = req.body;
+      const { shopId, eventType, productId, visitorId, eventId, platform, metadata } = req.body;
 
       if (!shopId) {
         throw new BadRequestError("shopId is required");
@@ -31,6 +31,7 @@ export class AnalyticsController {
           eventType,
           productId: productId ? Number(productId) : undefined,
           visitorId: String(visitorId),
+          eventId: eventId ? String(eventId) : undefined,
           platform,
           metadata,
         },
@@ -190,6 +191,24 @@ export class AnalyticsController {
       const targetDate = req.body.targetDate ? String(req.body.targetDate) : undefined;
       const result = await analyticsService.runDailyAggregation(targetDate);
       sendSuccess(res, result, "Daily analytics aggregated successfully");
+    } catch (error) {
+      next(error);
+    }
+  }
+
+  /**
+   * POST /api/analytics/cleanup
+   * 7-day retention cleanup trigger (Super Admin only)
+   */
+  async purgeOldData(req: AuthenticatedRequest, res: Response, next: NextFunction): Promise<void> {
+    try {
+      if (!req.user || req.user.role !== "super_admin") {
+        throw new ForbiddenError("Super Admin privileges required to trigger retention cleanup");
+      }
+
+      const retentionDays = req.body.retentionDays ? Number(req.body.retentionDays) : 7;
+      const result = await analyticsService.purgeOldAnalyticsData(retentionDays);
+      sendSuccess(res, result, "Old analytics events and visitors purged successfully");
     } catch (error) {
       next(error);
     }

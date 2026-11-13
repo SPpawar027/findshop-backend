@@ -2,6 +2,7 @@ import { createApp } from "./app";
 import { sequelize } from "./database";
 import { env } from "./config/env";
 import { categoryService } from "./modules/categories/category.service";
+import { startAnalyticsCleanupScheduler } from "./modules/analytics/analyticsCleanup.job";
 
 async function startServer(): Promise<void> {
   try {
@@ -40,6 +41,9 @@ async function startServer(): Promise<void> {
 
     // Ensure Category table and standard MVP 5-sector categories are seeded
     await categoryService.ensureDefaultCategories();
+
+    // Start 7-day retention cleanup scheduler
+    startAnalyticsCleanupScheduler();
 
     const app = createApp();
 

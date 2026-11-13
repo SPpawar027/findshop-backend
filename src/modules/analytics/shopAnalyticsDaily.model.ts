@@ -20,6 +20,7 @@ export class ShopAnalyticsDaily extends Model<
   declare uniqueVisitors: CreationOptional<number>;
   declare directionsClicks: CreationOptional<number>;
   declare callClicks: CreationOptional<number>;
+  declare whatsappClicks: CreationOptional<number>;
   declare productViews: CreationOptional<number>;
   declare wishlistAdds: CreationOptional<number>;
   declare offerViews: CreationOptional<number>;
@@ -73,6 +74,12 @@ ShopAnalyticsDaily.init(
       allowNull: false,
       defaultValue: 0,
       field: "call_clicks",
+    },
+    whatsappClicks: {
+      type: DataTypes.INTEGER,
+      allowNull: false,
+      defaultValue: 0,
+      field: "whatsapp_clicks",
     },
     productViews: {
       type: DataTypes.INTEGER,

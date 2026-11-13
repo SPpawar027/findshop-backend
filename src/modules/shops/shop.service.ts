@@ -281,10 +281,13 @@ export class ShopService {
     if (!shop) {
       throw new NotFoundError(`Shop '${identifier}' not found`);
     }
-
     // If shop is suspended or unverified, hide from public website/customer queries
-    if (!query.allowSuspended && (!shop.isOpen || !shop.isVerified)) {
-      throw new NotFoundError(`This shop is currently inactive or suspended.`);
+    // if admin and subadmin then all this suspended and not verified not open should be allowed
+    const userRole = (query as any).role;
+    if (userRole === "customer") {
+      if (!query.allowSuspended && (!shop.isOpen || !shop.isVerified)) {
+        throw new NotFoundError(`This shop is currently inactive or suspended.`);
+      }
     }
 
     // 1. Fetch filtered products for this shop and gather catalog categories
@@ -395,12 +398,12 @@ export class ShopService {
       galleryImages,
       owner: shop.owner
         ? {
-            id: shop.owner.id,
-            name: shop.owner.name,
-            email: shop.owner.email,
-            phone: shop.owner.phone,
-            role: shop.owner.role,
-          }
+          id: shop.owner.id,
+          name: shop.owner.name,
+          email: shop.owner.email,
+          phone: shop.owner.phone,
+          role: shop.owner.role,
+        }
         : undefined,
       products: filteredProducts.map((p) => p.toJSON()),
       productCategories,

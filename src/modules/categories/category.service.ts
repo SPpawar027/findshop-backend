@@ -444,7 +444,8 @@ export class CategoryService {
 
   /**
    * Get Shop-Specific Subcategories
-   * Merges global active subcategories with shop-specific ordering & visibility.
+   * Scoped strictly to the shop's assigned primary category (level 1 sector).
+   * Merges global active subcategories of that sector with shop-specific ordering & visibility.
    */
   async getShopSubcategories(shopId: number, parentId?: number) {
     const shop = await Shop.findByPk(shopId);
@@ -452,12 +453,29 @@ export class CategoryService {
       throw new NotFoundError(`Shop with ID ${shopId} not found`);
     }
 
+    let targetParentId = parentId;
+    if (!targetParentId && shop.category) {
+      const cleanCategory = shop.category.trim();
+      const parentCat = await Category.findOne({
+        where: {
+          level: 1,
+          [Op.or]: [
+            { name: { [Op.iLike]: cleanCategory } },
+            { slug: { [Op.iLike]: slugify(cleanCategory) } },
+          ],
+        },
+      });
+      if (parentCat) {
+        targetParentId = parentCat.id;
+      }
+    }
+
     const categoryWhere: any = {
       level: 2,
       isActive: true,
     };
-    if (parentId) {
-      categoryWhere.parentId = parentId;
+    if (targetParentId) {
+      categoryWhere.parentId = targetParentId;
     }
 
     const [allSubcategories, shopConfigs] = await Promise.all([

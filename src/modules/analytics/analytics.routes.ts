@@ -1,11 +1,12 @@
 import { Router } from "express";
 import { analyticsController } from "./analytics.controller";
 import { authMiddleware, optionalAuthMiddleware } from "../../core/middlewares/auth.middleware";
+import { analyticsRateLimiter } from "../../core/middlewares/analyticsRateLimiter.middleware";
 
 export const analyticsRouter = Router();
 
-// 1. Ingest Event (Public / Optional Auth for guest + logged-in users)
-analyticsRouter.post("/events", optionalAuthMiddleware, (req, res, next) =>
+// 1. Ingest Event (Public / Optional Auth for guest + logged-in users, with rate limiting)
+analyticsRouter.post("/events", analyticsRateLimiter, optionalAuthMiddleware, (req, res, next) =>
   analyticsController.trackEvent(req, res, next)
 );
 
@@ -34,5 +35,10 @@ analyticsRouter.get("/admin/top-shops", authMiddleware, (req, res, next) =>
 // 4. Daily Aggregation Job Trigger (Super Admin or Internal Cron)
 analyticsRouter.post("/aggregate-daily", authMiddleware, (req, res, next) =>
   analyticsController.triggerDailyAggregation(req, res, next)
+);
+
+// 5. 7-Day Data Retention Cleanup Trigger (Super Admin or Internal Cron)
+analyticsRouter.post("/cleanup", authMiddleware, (req, res, next) =>
+  analyticsController.purgeOldData(req, res, next)
 );
 

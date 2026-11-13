@@ -315,6 +315,11 @@ export class ProductService {
       throw new BadRequestError("A product can have a maximum of 3 images");
     }
 
+    const shop = await Shop.findByPk(data.shopId);
+    if (!shop) {
+      throw new NotFoundError(`Shop with ID ${data.shopId} not found`);
+    }
+
     let categoryName = data.category;
     let categoryId = data.categoryId ?? null;
 
@@ -326,6 +331,29 @@ export class ProductService {
         where: { name: { [Op.iLike]: categoryName.trim() } },
       });
       if (cat) categoryId = cat.id;
+    }
+
+    // Enforce that the product category belongs to the shop's assigned category
+    if (shop.category && categoryId) {
+      const cleanShopCat = shop.category.trim();
+      const parentCat = await Category.findOne({
+        where: {
+          level: 1,
+          [Op.or]: [
+            { name: { [Op.iLike]: cleanShopCat } },
+            { slug: { [Op.iLike]: cleanShopCat.toLowerCase().replace(/[^a-z0-9]+/g, "-") } },
+          ],
+        },
+      });
+
+      if (parentCat) {
+        const cat = await Category.findByPk(categoryId);
+        if (cat && cat.parentId && cat.parentId !== parentCat.id) {
+          throw new BadRequestError(
+            `Product category "${cat.name}" does not belong to your store's assigned category ("${shop.category}"). Products must belong to your store's subcategories.`
+          );
+        }
+      }
     }
 
     // Default position at end of subcategory product sequence
@@ -411,6 +439,32 @@ export class ProductService {
         where: { name: { [Op.iLike]: updateData.category.trim() } },
       });
       if (cat) updateData.categoryId = cat.id;
+    }
+
+    // Enforce that updated product category belongs to the shop's assigned category
+    if (updateData.categoryId) {
+      const shop = await Shop.findByPk(product.shopId);
+      if (shop && shop.category) {
+        const cleanShopCat = shop.category.trim();
+        const parentCat = await Category.findOne({
+          where: {
+            level: 1,
+            [Op.or]: [
+              { name: { [Op.iLike]: cleanShopCat } },
+              { slug: { [Op.iLike]: cleanShopCat.toLowerCase().replace(/[^a-z0-9]+/g, "-") } },
+            ],
+          },
+        });
+
+        if (parentCat) {
+          const cat = await Category.findByPk(updateData.categoryId);
+          if (cat && cat.parentId && cat.parentId !== parentCat.id) {
+            throw new BadRequestError(
+              `Product category "${cat.name}" does not belong to your store's assigned category ("${shop.category}").`
+            );
+          }
+        }
+      }
     }
 
     // If subcategory actually changed, place product at the end of the new subcategory sequence

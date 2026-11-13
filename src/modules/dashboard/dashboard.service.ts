@@ -7,6 +7,7 @@ import { Review } from "../reviews/review.model";
 import { ShopAnalyticsDaily } from "../analytics/shopAnalyticsDaily.model";
 import { ShopAnalyticsEvent } from "../analytics/shopAnalyticsEvent.model";
 import { NotFoundError, ForbiddenError } from "../../core/errors/AppError";
+import { getFullMediaUrl, formatMediaUrls } from "../../core/utils/media";
 
 export interface SuperAdminDashboardData {
   metrics: {
@@ -244,7 +245,7 @@ export class DashboardService {
         reportedReviews,
       },
       platformGrowth,
-      recentShops: recentShopsList.map((s) => s.toJSON()),
+      recentShops: recentShopsList.map((s) => formatMediaUrls(s.toJSON())),
       recentActivities: recentActivities.slice(0, 10),
     };
   }
@@ -448,8 +449,8 @@ export class DashboardService {
         isVerified: shop.isVerified,
         isOpen: shop.isOpen,
         openingHours: shop.openingHours,
-        bannerUrl: shop.bannerUrl,
-        logoUrl: shop.logoUrl,
+        bannerUrl: getFullMediaUrl(shop.bannerUrl),
+        logoUrl: getFullMediaUrl(shop.logoUrl),
         ownerName: shop.owner?.name,
         ownerEmail: shop.owner?.email,
         ownerPhone: shop.owner?.phone,
@@ -474,8 +475,8 @@ export class DashboardService {
         clicks: performanceClicks,
         inquiries: performanceInquiries,
       },
-      lowStockItems: lowStockItems.map((p) => p.toJSON()),
-      recentProducts: recentProducts.map((p) => p.toJSON()),
+      lowStockItems: lowStockItems.map((p) => formatMediaUrls(p.toJSON())),
+      recentProducts: recentProducts.map((p) => formatMediaUrls(p.toJSON())),
       recentReviews: recentReviews.map((r) => r.toJSON()),
     };
   }

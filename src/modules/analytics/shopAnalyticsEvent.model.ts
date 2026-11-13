@@ -16,6 +16,7 @@ export type AnalyticsEventType =
   | "product_view"
   | "directions_click"
   | "call_click"
+  | "whatsapp_click"
   | "wishlist_add"
   | "offer_view"
   | "offer_redeemed"
@@ -28,6 +29,7 @@ export class ShopAnalyticsEvent extends Model<
   InferCreationAttributes<ShopAnalyticsEvent>
 > {
   declare id: CreationOptional<number>;
+  declare eventId: string;
   declare shopId: ForeignKey<Shop["id"]>;
   declare userId: ForeignKey<User["id"]> | null;
   declare visitorId: string;
@@ -44,6 +46,13 @@ ShopAnalyticsEvent.init(
       type: DataTypes.BIGINT,
       autoIncrement: true,
       primaryKey: true,
+    },
+    eventId: {
+      type: DataTypes.UUID,
+      allowNull: false,
+      unique: true,
+      field: "event_id",
+      defaultValue: DataTypes.UUIDV4,
     },
     shopId: {
       type: DataTypes.INTEGER,

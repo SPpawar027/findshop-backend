@@ -11,6 +11,7 @@ import { ImageDeletionJob } from "../modules/upload/imageDeletionJob.model";
 import { ImageAsset } from "../modules/upload/imageAsset.model";
 import { ShopAnalyticsEvent } from "../modules/analytics/shopAnalyticsEvent.model";
 import { ShopAnalyticsDaily } from "../modules/analytics/shopAnalyticsDaily.model";
+import { ShopAnalyticsUniqueVisitor } from "../modules/analytics/shopAnalyticsUniqueVisitor.model";
 import { ShopSubcategory } from "../modules/categories/shopSubcategory.model";
 import { setupAssociations } from "./associations";
 
@@ -31,6 +32,7 @@ export {
   ImageAsset,
   ShopAnalyticsEvent,
   ShopAnalyticsDaily,
+  ShopAnalyticsUniqueVisitor,
   ShopSubcategory,
 };
 

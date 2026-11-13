@@ -45,8 +45,8 @@ export class ShopController {
           typeof req.query.productSearch === "string"
             ? req.query.productSearch
             : typeof req.query.search === "string"
-            ? req.query.search
-            : undefined,
+              ? req.query.search
+              : undefined,
         availableOnly: req.query.availableOnly === "true",
         productsLimit: req.query.productsLimit ? Number(req.query.productsLimit) : undefined,
         productsPage: req.query.productsPage ? Number(req.query.productsPage) : undefined,
@@ -82,8 +82,8 @@ export class ShopController {
           typeof req.query.productSearch === "string"
             ? req.query.productSearch
             : typeof req.query.search === "string"
-            ? req.query.search
-            : undefined,
+              ? req.query.search
+              : undefined,
         availableOnly: req.query.availableOnly === "true",
         productsLimit: req.query.productsLimit ? Number(req.query.productsLimit) : undefined,
         productsPage: req.query.productsPage ? Number(req.query.productsPage) : undefined,
@@ -105,6 +105,7 @@ export class ShopController {
       }
 
       const userRole = (req as any).user?.role;
+      console.log("🚀 ~ ShopController ~ getBySlug ~ userRole:", userRole)
       const allowSuspended =
         req.query.allowSuspended === "true" ||
         userRole === "super_admin" ||
@@ -118,8 +119,8 @@ export class ShopController {
           typeof req.query.productSearch === "string"
             ? req.query.productSearch
             : typeof req.query.search === "string"
-            ? req.query.search
-            : undefined,
+              ? req.query.search
+              : undefined,
         availableOnly: req.query.availableOnly === "true",
         productsLimit: req.query.productsLimit ? Number(req.query.productsLimit) : undefined,
         productsPage: req.query.productsPage ? Number(req.query.productsPage) : undefined,

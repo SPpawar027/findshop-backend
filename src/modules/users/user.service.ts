@@ -8,6 +8,7 @@ export interface CreateUserInput {
   phone?: string | null;
   role?: UserRole;
   searchRadiusKm?: number;
+  avatarUrl?: string | null;
 }
 
 export class UserService {
@@ -76,6 +77,7 @@ export class UserService {
       phone: data.phone !== undefined ? data.phone : user.phone,
       role: data.role ?? user.role,
       searchRadiusKm: radiusUpdate,
+      avatarUrl: data.avatarUrl !== undefined ? data.avatarUrl : user.avatarUrl,
       isActive: data.isActive !== undefined ? data.isActive : user.isActive,
     });
 
