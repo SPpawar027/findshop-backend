@@ -138,7 +138,7 @@ export class AnalyticsController {
       if (!req.user) {
         throw new UnauthorizedError("Authentication required");
       }
-      if (req.user.role !== "super_admin") {
+      if (!['super_admin', 'superadmin'].includes(req.user.role)) {
         throw new ForbiddenError("Super Admin privileges required to view platform analytics");
       }
 
@@ -162,7 +162,7 @@ export class AnalyticsController {
       if (!req.user) {
         throw new UnauthorizedError("Authentication required");
       }
-      if (req.user.role !== "super_admin") {
+      if (!['super_admin', 'superadmin'].includes(req.user.role)) {
         throw new ForbiddenError("Super Admin privileges required to view top shops");
       }
 

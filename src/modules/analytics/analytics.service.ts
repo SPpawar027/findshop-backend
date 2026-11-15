@@ -938,20 +938,20 @@ export class AnalyticsService {
       },
       attributes: [
         "shopId",
-        [fn("COALESCE", fn("SUM", col("total_views")), 0), "viewsCount"],
+        [fn("COALESCE", fn("SUM", col("total_views")), 0), "views_count"],
         [
           fn("COALESCE", fn("SUM", col("unique_visitors")), 0),
-          "uniqueVisitors",
+          "unique_visitors_count",
         ],
         [
           fn("COALESCE", fn("SUM", col("directions_clicks")), 0),
-          "directionsCount",
+          "directions_count",
         ],
-        [fn("COALESCE", fn("SUM", col("call_clicks")), 0), "callsCount"],
-        [fn("COALESCE", fn("SUM", col("whatsapp_clicks")), 0), "whatsappCount"],
+        [fn("COALESCE", fn("SUM", col("call_clicks")), 0), "calls_count"],
+        [fn("COALESCE", fn("SUM", col("whatsapp_clicks")), 0), "whatsapp_count"],
       ],
       group: ["shopId"],
-      order: [[literal("viewsCount"), "DESC"]],
+      order: [[literal("views_count"), "DESC"]],
       limit,
       raw: true,
     })) as any[];
@@ -978,11 +978,11 @@ export class AnalyticsService {
         city: (sh as any).city || "Betul",
         address: (sh as any).address || "",
         logoUrl: (sh as any).logoUrl || null,
-        totalViews: Number(s.viewsCount || 0),
-        uniqueVisitors: Number(s.uniqueVisitors || 0),
-        directionsClicks: Number(s.directionsCount || 0),
-        callClicks: Number(s.callsCount || 0),
-        whatsappClicks: Number(s.whatsappCount || 0),
+        totalViews: Number(s.views_count || 0),
+        uniqueVisitors: Number(s.unique_visitors_count || 0),
+        directionsClicks: Number(s.directions_count || 0),
+        callClicks: Number(s.calls_count || 0),
+        whatsappClicks: Number(s.whatsapp_count || 0),
       };
     });
   }
