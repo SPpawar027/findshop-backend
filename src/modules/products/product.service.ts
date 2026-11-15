@@ -21,6 +21,7 @@ export interface ListProductsQuery {
   lat?: number;
   lng?: number;
   radiusKm?: number;
+  sortBy?: string;
 }
 
 export interface CreateProductInput {
@@ -79,10 +80,12 @@ export class ProductService {
       where.price = priceFilter;
     }
 
-    if (query.search) {
+    if (query.search && query.search.trim()) {
+      const s = `%${query.search.trim()}%`;
       where[Op.or as unknown as string] = [
-        { name: { [Op.iLike]: `%${query.search}%` } },
-        { description: { [Op.iLike]: `%${query.search}%` } },
+        { name: { [Op.iLike]: s } },
+        { description: { [Op.iLike]: s } },
+        { category: { [Op.iLike]: s } },
       ];
     }
 
@@ -122,10 +125,12 @@ export class ProductService {
       !isNaN(Number(query.lat)) &&
       !isNaN(Number(query.lng));
 
+    let distanceLiteral: any = null;
+
     if (hasLocation) {
       const lat = Number(query.lat);
       const lng = Number(query.lng);
-      const distanceLiteral = literal(`
+      distanceLiteral = literal(`
         (6371 * acos(
           least(1.0, greatest(-1.0,
             cos(radians(${lat})) * cos(radians("shop"."latitude")) *
@@ -164,16 +169,36 @@ export class ProductService {
       required: false,
     };
 
+    let order: any = [
+      ["sortOrder", "ASC"],
+      ["createdAt", "DESC"],
+    ];
+
+    const sortOption = (query.sortBy || "").toLowerCase().trim();
+    if (sortOption === "price_asc" || sortOption === "price-asc") {
+      order = [["price", "ASC"], ["createdAt", "DESC"]];
+    } else if (sortOption === "price_desc" || sortOption === "price-desc") {
+      order = [["price", "DESC"], ["createdAt", "DESC"]];
+    } else if (sortOption === "newest") {
+      order = [["createdAt", "DESC"]];
+    } else if (hasLocation) {
+      // Proximity-first ranking: when user location is provided, surface items from nearest shops
+      order = [
+        [distanceLiteral, "ASC"],
+        ["sortOrder", "ASC"],
+        ["createdAt", "DESC"],
+      ];
+    }
+
     const { count, rows } = await Product.findAndCountAll({
       where,
       include: [shopInclude, categoryInclude],
       limit,
       offset,
-      order: [
-        ["sortOrder", "ASC"],
-        ["createdAt", "DESC"],
-      ],
+      order,
     });
+
+    const totalPages = Math.ceil(count / limit);
 
     return {
       products: rows,
@@ -181,7 +206,8 @@ export class ProductService {
         page,
         limit,
         total: count,
-        totalPages: Math.ceil(count / limit),
+        totalPages,
+        hasMore: page < totalPages,
       },
     };
   }

@@ -28,9 +28,14 @@ export interface SuperAdminDashboardData {
   };
   platformGrowth: Array<{
     month: string;
+    year: number;
     shops: number;
     users: number;
-    orders: number;
+    interactions: number;
+    orders: number; // Backwards-compatible alias for interactions
+    newShops: number;
+    newUsers: number;
+    newInteractions: number;
   }>;
   recentShops: Array<Record<string, unknown>>;
   recentActivities: Array<{
@@ -152,30 +157,134 @@ export class DashboardService {
 
     // 2. Real Monthly Growth Calculation (for the past N months)
     const now = new Date();
-    const monthsData: Array<{ month: string; endDate: Date }> = [];
+    const currentYear = now.getFullYear();
+    const currentMonth = now.getMonth();
+
+    const monthsData: Array<{
+      month: string;
+      year: number;
+      startDate: Date;
+      endDate: Date;
+    }> = [];
+
     for (let i = monthsCount - 1; i >= 0; i--) {
-      const d = new Date(now.getFullYear(), now.getMonth() - i + 1, 0, 23, 59, 59, 999);
-      const monthLabel = d.toLocaleString("en-US", { month: "short" });
-      monthsData.push({ month: monthLabel, endDate: d });
+      const targetDate = new Date(currentYear, currentMonth - i, 1);
+      const targetYear = targetDate.getFullYear();
+      const targetMonth = targetDate.getMonth();
+
+      const startDate = new Date(targetYear, targetMonth, 1, 0, 0, 0, 0);
+      const isCurrentMonth = i === 0;
+      const endDate = isCurrentMonth
+        ? now
+        : new Date(targetYear, targetMonth + 1, 0, 23, 59, 59, 999);
+
+      const monthLabel = startDate.toLocaleString("en-US", { month: "short" });
+      monthsData.push({
+        month: monthLabel,
+        year: targetYear,
+        startDate,
+        endDate,
+      });
     }
 
-    const growthPromises = monthsData.map(async ({ month, endDate }) => {
-      const [shopsUpToDate, usersUpToDate, reviewsUpToDate, analyticsInteractions] = await Promise.all([
+    const growthPromises = monthsData.map(async ({ month, year, startDate, endDate }) => {
+      const startDateStr = startDate.toISOString().split("T")[0];
+      const endDateStr = endDate.toISOString().split("T")[0];
+
+      // 1. Cumulative counts (up to endDate)
+      const [
+        shopsUpToDate,
+        usersUpToDate,
+        reviewsUpToDate,
+        dirClicksTotal,
+        callClicksTotal,
+        waClicksTotal,
+        wishlistTotal,
+        eventsTotal,
+      ] = await Promise.all([
         Shop.count({ where: { createdAt: { [Op.lte]: endDate } } }),
         User.count({ where: { createdAt: { [Op.lte]: endDate } } }),
         Review.count({ where: { createdAt: { [Op.lte]: endDate } } }),
         ShopAnalyticsDaily.sum("directionsClicks", {
-          where: { analyticsDate: { [Op.lte]: endDate.toISOString().split("T")[0] } },
+          where: { analyticsDate: { [Op.lte]: endDateStr } },
+        }),
+        ShopAnalyticsDaily.sum("callClicks", {
+          where: { analyticsDate: { [Op.lte]: endDateStr } },
+        }),
+        ShopAnalyticsDaily.sum("whatsappClicks", {
+          where: { analyticsDate: { [Op.lte]: endDateStr } },
+        }),
+        ShopAnalyticsDaily.sum("wishlistAdds", {
+          where: { analyticsDate: { [Op.lte]: endDateStr } },
+        }),
+        ShopAnalyticsEvent.count({
+          where: {
+            eventType: { [Op.in]: ["directions_click", "call_click", "whatsapp_click", "wishlist_add"] },
+            createdAt: { [Op.lte]: endDate },
+          },
         }),
       ]);
 
-      const interactions = (Number(analyticsInteractions) || 0) + reviewsUpToDate;
+      // 2. Monthly New additions (between startDate and endDate)
+      const [
+        newShops,
+        newUsers,
+        newReviews,
+        dirClicksMonth,
+        callClicksMonth,
+        waClicksMonth,
+        wishlistMonth,
+        eventsMonth,
+      ] = await Promise.all([
+        Shop.count({ where: { createdAt: { [Op.gte]: startDate, [Op.lte]: endDate } } }),
+        User.count({ where: { createdAt: { [Op.gte]: startDate, [Op.lte]: endDate } } }),
+        Review.count({ where: { createdAt: { [Op.gte]: startDate, [Op.lte]: endDate } } }),
+        ShopAnalyticsDaily.sum("directionsClicks", {
+          where: { analyticsDate: { [Op.gte]: startDateStr, [Op.lte]: endDateStr } },
+        }),
+        ShopAnalyticsDaily.sum("callClicks", {
+          where: { analyticsDate: { [Op.gte]: startDateStr, [Op.lte]: endDateStr } },
+        }),
+        ShopAnalyticsDaily.sum("whatsappClicks", {
+          where: { analyticsDate: { [Op.gte]: startDateStr, [Op.lte]: endDateStr } },
+        }),
+        ShopAnalyticsDaily.sum("wishlistAdds", {
+          where: { analyticsDate: { [Op.gte]: startDateStr, [Op.lte]: endDateStr } },
+        }),
+        ShopAnalyticsEvent.count({
+          where: {
+            eventType: { [Op.in]: ["directions_click", "call_click", "whatsapp_click", "wishlist_add"] },
+            createdAt: { [Op.gte]: startDate, [Op.lte]: endDate },
+          },
+        }),
+      ]);
+
+      const dailyInteractionsCumulative =
+        (Number(dirClicksTotal) || 0) +
+        (Number(callClicksTotal) || 0) +
+        (Number(waClicksTotal) || 0) +
+        (Number(wishlistTotal) || 0);
+      const totalInteractionsCumulative =
+        Math.max(dailyInteractionsCumulative, Number(eventsTotal) || 0) + reviewsUpToDate;
+
+      const dailyInteractionsMonth =
+        (Number(dirClicksMonth) || 0) +
+        (Number(callClicksMonth) || 0) +
+        (Number(waClicksMonth) || 0) +
+        (Number(wishlistMonth) || 0);
+      const totalInteractionsMonth =
+        Math.max(dailyInteractionsMonth, Number(eventsMonth) || 0) + newReviews;
 
       return {
         month,
+        year,
         shops: shopsUpToDate,
         users: usersUpToDate,
-        orders: interactions,
+        interactions: totalInteractionsCumulative,
+        orders: totalInteractionsCumulative, // alias for backwards compatibility
+        newShops,
+        newUsers,
+        newInteractions: totalInteractionsMonth,
       };
     });
 

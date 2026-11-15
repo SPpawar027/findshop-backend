@@ -1,19 +1,24 @@
 import type { Request, Response, NextFunction } from "express";
 import { shopService } from "./shop.service";
+import { Shop } from "./shop.model";
 import { sendSuccess, sendCreated } from "../../core/utils/response";
-import { BadRequestError } from "../../core/errors/AppError";
+import { BadRequestError, ForbiddenError, NotFoundError } from "../../core/errors/AppError";
 import { formatMediaUrls } from "../../core/utils/media";
+import type { AuthenticatedRequest } from "../../core/middlewares/auth.middleware";
 
 export class ShopController {
   async getAll(req: Request, res: Response, next: NextFunction): Promise<void> {
     try {
       const query = {
         ...req.query,
+        page: req.query.page !== undefined ? Math.max(1, Number(req.query.page)) : 1,
+        limit: req.query.limit !== undefined ? Math.min(100, Math.max(1, Number(req.query.limit))) : 20,
         lat: req.query.lat !== undefined ? Number(req.query.lat) : undefined,
         lng: req.query.lng !== undefined ? Number(req.query.lng) : undefined,
         radiusKm: req.query.radius !== undefined
           ? Number(req.query.radius)
           : (req.query.radiusKm !== undefined ? Number(req.query.radiusKm) : undefined),
+        sortBy: req.query.sortBy ? String(req.query.sortBy) : undefined,
       };
       const result = await shopService.findAll(query);
       const formattedShops = result.shops.map((s) => formatMediaUrls(s));
@@ -168,9 +173,17 @@ export class ShopController {
     }
   }
 
-  async create(req: Request, res: Response, next: NextFunction): Promise<void> {
+  async create(req: AuthenticatedRequest, res: Response, next: NextFunction): Promise<void> {
     try {
-      const shop = await shopService.create(req.body);
+      const shopData = { ...req.body };
+      // If created by a shop_admin, bind ownerId to the authenticated merchant and prevent self-verification
+      if (req.user && req.user.role === "shop_admin") {
+        shopData.ownerId = req.user.id;
+        shopData.isVerified = false;
+        delete shopData.rating;
+        delete shopData.reviewCount;
+      }
+      const shop = await shopService.create(shopData);
       const formatted = formatMediaUrls(shop);
       if ((shop as any).merchantCredentials) {
         (formatted as any).merchantCredentials = (shop as any).merchantCredentials;
@@ -181,12 +194,30 @@ export class ShopController {
     }
   }
 
-  async update(req: Request, res: Response, next: NextFunction): Promise<void> {
+  async update(req: AuthenticatedRequest, res: Response, next: NextFunction): Promise<void> {
     try {
       const id = Number(req.params.id);
       if (isNaN(id)) {
         throw new BadRequestError("Invalid shop ID");
       }
+
+      // Enforce strict ownership check for shop_admin (prevent IDOR)
+      if (req.user && req.user.role === "shop_admin") {
+        const existingShop = await Shop.findByPk(id);
+        if (!existingShop) {
+          throw new NotFoundError(`Shop with id ${id} not found`);
+        }
+        if (existingShop.ownerId !== req.user.id) {
+          throw new ForbiddenError("You do not have permission to update this shop");
+        }
+
+        // Prevent unauthorized privilege escalation by shop owners
+        delete req.body.isVerified;
+        delete req.body.rating;
+        delete req.body.reviewCount;
+        delete req.body.ownerId;
+      }
+
       const shop = await shopService.update(id, req.body);
       sendSuccess(res, formatMediaUrls(shop), "Shop updated successfully");
     } catch (error) {

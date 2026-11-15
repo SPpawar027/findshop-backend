@@ -11,12 +11,15 @@ export class ProductController {
     try {
       const query = {
         ...req.query,
+        page: req.query.page !== undefined ? Math.max(1, Number(req.query.page)) : 1,
+        limit: req.query.limit !== undefined ? Math.min(100, Math.max(1, Number(req.query.limit))) : 20,
         categoryId: req.query.categoryId !== undefined ? Number(req.query.categoryId) : undefined,
         lat: req.query.lat !== undefined ? Number(req.query.lat) : undefined,
         lng: req.query.lng !== undefined ? Number(req.query.lng) : undefined,
         radiusKm: req.query.radius !== undefined
           ? Number(req.query.radius)
           : (req.query.radiusKm !== undefined ? Number(req.query.radiusKm) : undefined),
+        sortBy: req.query.sortBy ? String(req.query.sortBy) : undefined,
       };
       const result = await productService.findAll(query);
       const formattedProducts = result.products.map((p) => formatMediaUrls(p));

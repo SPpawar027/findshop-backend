@@ -29,6 +29,7 @@ export interface ListShopsQuery {
   lat?: number;
   lng?: number;
   radiusKm?: number;
+  sortBy?: string;
   status?: string;
   activeOnly?: boolean | string;
   excludeSuspended?: boolean | string;
@@ -179,10 +180,13 @@ export class ShopService {
       where.city = { [Op.iLike]: `%${query.city}%` };
     }
 
-    if (query.search) {
+    if (query.search && query.search.trim()) {
+      const s = `%${query.search.trim()}%`;
       where[Op.or as unknown as string] = [
-        { name: { [Op.iLike]: `%${query.search}%` } },
-        { description: { [Op.iLike]: `%${query.search}%` } },
+        { name: { [Op.iLike]: s } },
+        { description: { [Op.iLike]: s } },
+        { category: { [Op.iLike]: s } },
+        { city: { [Op.iLike]: s } },
       ];
     }
 
@@ -224,7 +228,22 @@ export class ShopService {
         `);
       }
 
-      order = literal(`"distanceKm" ASC`);
+      const sortOption = (query.sortBy || "").toLowerCase().trim();
+      if (sortOption === "rating") {
+        order = [["rating", "DESC"], ["createdAt", "DESC"]];
+      } else if (sortOption === "newest") {
+        order = [["createdAt", "DESC"]];
+      } else {
+        // Default when location is present: Proximity-first ranking
+        order = [[distanceLiteral, "ASC"], ["rating", "DESC"]];
+      }
+    } else {
+      const sortOption = (query.sortBy || "").toLowerCase().trim();
+      if (sortOption === "newest") {
+        order = [["createdAt", "DESC"]];
+      } else {
+        order = [["rating", "DESC"], ["createdAt", "DESC"]];
+      }
     }
 
     const { count, rows } = await Shop.findAndCountAll({
@@ -235,13 +254,16 @@ export class ShopService {
       order,
     });
 
+    const totalPages = Math.ceil(count / limit);
+
     return {
       shops: rows,
       meta: {
         page,
         limit,
         total: count,
-        totalPages: Math.ceil(count / limit),
+        totalPages,
+        hasMore: page < totalPages,
       },
     };
   }
