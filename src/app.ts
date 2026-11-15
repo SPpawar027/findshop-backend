@@ -18,6 +18,7 @@ import { errorHandler } from "./core/middlewares/errorHandler";
 import { NotFoundError } from "./core/errors/AppError";
 
 import { getSystemHealthAndInfo } from "./core/utils/systemInfo";
+import { neonHeartbeat } from "./config/neonHeartbeat";
 
 export function createApp(): express.Application {
   const app = express();
@@ -35,12 +36,35 @@ export function createApp(): express.Application {
     next();
   });
 
+  // Record REAL user HTTP activity to coordinate with Neon Keep-Alive Heartbeat (development/local only).
+  // Uptime pings (/api/health, /knowbackend, HEAD) are explicitly EXCLUDED so that UptimeRobot 24/7 pings
+  // keep Render awake without preventing Neon from sleeping after 45 minutes of real user inactivity!
+  if (process.env.NODE_ENV !== "production") {
+    app.use((req, _res, next) => {
+      const cleanPath = req.path.toLowerCase();
+      const isUptimePing =
+        cleanPath === "/api/health" ||
+        cleanPath === "/health" ||
+        cleanPath === "/api/knowbackend" ||
+        cleanPath === "/knowbackend" ||
+        req.method === "HEAD";
+
+      if (!isUptimePing) {
+        neonHeartbeat.recordActivity();
+      }
+      next();
+    });
+  }
+
   // Health check
   app.get("/api/health", (_req, res) => {
     res.json({
       success: true,
       message: "FindShopEasily backend is running",
       timestamp: new Date().toISOString(),
+      ...(process.env.NODE_ENV !== "production"
+        ? { neonHeartbeat: neonHeartbeat.getStatus() }
+        : {}),
     });
   });
 
