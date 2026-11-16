@@ -23,8 +23,40 @@ import { neonHeartbeat } from "./config/neonHeartbeat";
 export function createApp(): express.Application {
   const app = express();
 
-  // Global Middlewares
-  app.use(cors());
+  // Global Middlewares - Configured for credentialed (HttpOnly Cookie) cross-origin web requests & mobile app access
+  const ALLOWED_ORIGIN_PATTERNS = [
+    /^http:\/\/localhost:(3000|3001|3002|4000)$/,
+    /^http:\/\/127\.0\.0\.1:(3000|3001|3002|4000)$/,
+    /^https:\/\/findshop-(website|shop-admin|super-admin)-(production|development)\.sagarpawar27000\.workers\.dev$/,
+    /^https:\/\/.*\.workers\.dev$/,
+    /^https:\/\/.*\.findshopeasily\.com$/,
+    /^https:\/\/findshopeasily\.com$/,
+    /^https:\/\/.*\.sslip\.io$/,
+  ];
+
+  app.use(
+    cors({
+      origin: (origin, callback) => {
+        // Allow mobile apps, native CLI, or server-to-server requests without Origin header
+        if (!origin) {
+          return callback(null, true);
+        }
+        const isAllowed = ALLOWED_ORIGIN_PATTERNS.some((pattern) => pattern.test(origin));
+        if (isAllowed) {
+          return callback(null, true);
+        }
+        // In development/local, allow all local origins
+        if (process.env.NODE_ENV !== "production") {
+          return callback(null, true);
+        }
+        return callback(new Error(`CORS blocked: Origin '${origin}' is not authorized.`));
+      },
+      credentials: true,
+      methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+      allowedHeaders: ["Content-Type", "Authorization", "X-Platform", "X-Visitor-Id", "X-Refresh-Token", "X-Shop-Id"],
+      exposedHeaders: ["Set-Cookie"],
+    })
+  );
   app.use(express.json());
   app.use(requestLogger);
 

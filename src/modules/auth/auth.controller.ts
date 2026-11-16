@@ -1,8 +1,70 @@
-import type { Request, Response, NextFunction } from "express";
+import type { Request, Response, NextFunction, CookieOptions } from "express";
 import { authService } from "./auth.service";
 import { sendSuccess, sendCreated } from "../../core/utils/response";
 import { BadRequestError } from "../../core/errors/AppError";
-import type { AuthenticatedRequest } from "../../core/middlewares/auth.middleware";
+import { type AuthenticatedRequest, parseCookies } from "../../core/middlewares/auth.middleware";
+
+function setAuthCookies(res: Response, role: string, accessToken: string, refreshToken: string) {
+  const isProd = process.env.NODE_ENV === "production";
+  const cookieBaseOptions: CookieOptions = {
+    httpOnly: true,
+    secure: isProd,
+    sameSite: isProd ? "none" : "lax",
+    path: "/",
+  };
+
+  const accessOptions: CookieOptions = {
+    ...cookieBaseOptions,
+    maxAge: 15 * 60 * 1000, // 15 minutes
+  };
+
+  const refreshOptions: CookieOptions = {
+    ...cookieBaseOptions,
+    maxAge: 10 * 24 * 60 * 60 * 1000, // 10 days
+  };
+
+  if (role === "super_admin") {
+    res.cookie("fse_admin_token", accessToken, accessOptions);
+    res.cookie("fse_admin_session", refreshToken, refreshOptions);
+  } else if (role === "shop_admin") {
+    res.cookie("fse_shop_token", accessToken, accessOptions);
+    res.cookie("fse_shop_session", refreshToken, refreshOptions);
+  } else {
+    res.cookie("fse_customer_token", accessToken, accessOptions);
+    res.cookie("fse_customer_session", refreshToken, refreshOptions);
+  }
+
+  // Also set common cookie for backward-compatible fallback
+  res.cookie("fse_token", accessToken, accessOptions);
+  res.cookie("fse_session", refreshToken, refreshOptions);
+}
+
+function clearAuthCookies(res: Response) {
+  const isProd = process.env.NODE_ENV === "production";
+  const clearOptions: CookieOptions = {
+    httpOnly: true,
+    secure: isProd,
+    sameSite: isProd ? "none" : "lax",
+    path: "/",
+  };
+
+  const cookieNames = [
+    "fse_admin_token",
+    "fse_admin_session",
+    "fse_shop_token",
+    "fse_shop_session",
+    "fse_customer_token",
+    "fse_customer_session",
+    "fse_token",
+    "fse_session",
+    "token",
+    "refreshToken",
+  ];
+
+  cookieNames.forEach((name) => {
+    res.clearCookie(name, clearOptions);
+  });
+}
 
 export class AuthController {
   async register(req: Request, res: Response, next: NextFunction): Promise<void> {
@@ -13,6 +75,7 @@ export class AuthController {
       }
 
       const result = await authService.register({ name, email, password, phone, role });
+      setAuthCookies(res, result.user.role, result.accessToken, result.refreshToken);
       sendCreated(res, result, "Account registered successfully");
     } catch (error) {
       next(error);
@@ -32,6 +95,7 @@ export class AuthController {
         password,
         expectedRole: targetRole,
       });
+      setAuthCookies(res, result.user.role, result.accessToken, result.refreshToken);
       sendSuccess(res, result, "Logged in successfully");
     } catch (error) {
       next(error);
@@ -40,11 +104,21 @@ export class AuthController {
 
   async refreshToken(req: Request, res: Response, next: NextFunction): Promise<void> {
     try {
-      const refreshToken = req.body.refreshToken || (req.headers["x-refresh-token"] as string);
+      const cookies = parseCookies(req.headers.cookie);
+      const refreshToken =
+        req.body?.refreshToken ||
+        (req.headers["x-refresh-token"] as string) ||
+        cookies.fse_admin_session ||
+        cookies.fse_shop_session ||
+        cookies.fse_customer_session ||
+        cookies.fse_session ||
+        cookies.refreshToken;
+
       if (!refreshToken || typeof refreshToken !== "string") {
         throw new BadRequestError("Refresh token is required");
       }
       const result = await authService.refreshToken(refreshToken);
+      setAuthCookies(res, result.user.role, result.accessToken, result.refreshToken);
       sendSuccess(res, result, "Session token refreshed successfully");
     } catch (error) {
       next(error);
@@ -100,6 +174,7 @@ export class AuthController {
 
       const targetRole = expectedRole || portal;
       const result = await authService.googleLogin(targetToken, targetRole);
+      setAuthCookies(res, result.user.role, result.accessToken, result.refreshToken);
       sendSuccess(res, result, "Google authentication successful");
     } catch (error) {
       next(error);
@@ -163,15 +238,21 @@ export class AuthController {
 
   async logout(req: Request, res: Response, next: NextFunction): Promise<void> {
     try {
-      const refreshToken = req.body?.refreshToken || (req.headers["x-refresh-token"] as string | undefined);
+      const cookies = parseCookies(req.headers.cookie);
+      const refreshToken =
+        req.body?.refreshToken ||
+        (req.headers["x-refresh-token"] as string | undefined) ||
+        cookies.fse_admin_session ||
+        cookies.fse_shop_session ||
+        cookies.fse_customer_session ||
+        cookies.fse_session ||
+        cookies.refreshToken;
+
       const authReq = req as AuthenticatedRequest;
       const userId = authReq.user?.id;
 
-      // Clear any potential authentication cookies across portals
-      res.clearCookie("fse_token", { path: "/" });
-      res.clearCookie("fse_refresh_token", { path: "/" });
-      res.clearCookie("token", { path: "/" });
-      res.clearCookie("refreshToken", { path: "/" });
+      // Clear all authentication cookies across portals
+      clearAuthCookies(res);
 
       const result = await authService.logout(userId, refreshToken);
       sendSuccess(res, result, "Logged out successfully");

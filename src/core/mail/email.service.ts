@@ -22,6 +22,7 @@ export interface SendOtpInput {
   otp: string;
   type: "verification" | "password_reset";
   expiresMinutes?: number;
+  resetUrl?: string;
 }
 
 export interface EmailSendResult {
@@ -49,28 +50,54 @@ export class EmailService {
 
     if (host && user && pass) {
       try {
+        const cleanPass = pass.trim().replace(/\s+/g, "");
         this.transporter = nodemailer.createTransport({
-          host,
+          host: host.trim(),
           port,
           secure,
           auth: {
-            user,
-            pass,
+            user: user.trim(),
+            pass: cleanPass,
           },
-          // Pool connections for higher throughput
+          // Pool connections for higher throughput with keep-alive timeouts
           pool: true,
           maxConnections: 5,
           maxMessages: 100,
+          connectionTimeout: 15000,
+          greetingTimeout: 10000,
+          socketTimeout: 20000,
         });
         this.isConfigured = true;
       } catch (err) {
-        console.error("[EmailService] Failed to initialize SMTP transporter:", err);
+        console.error("[EmailService] Failed to initialize SMTP transporter:", err instanceof Error ? err.message : String(err));
         this.transporter = null;
         this.isConfigured = false;
       }
     } else {
       this.isConfigured = false;
       this.transporter = null;
+    }
+  }
+
+  /**
+   * Verifies the SMTP transporter connection health without exposing credentials.
+   */
+  async verifyConnection(): Promise<{ ok: boolean; error?: string }> {
+    if (!this.isConfigured || !this.transporter) {
+      this.initTransporter();
+    }
+    if (!this.isConfigured || !this.transporter) {
+      return {
+        ok: false,
+        error: "SMTP transporter is not configured. Please ensure SMTP_HOST, SMTP_USER, and SMTP_PASS are set in environment.",
+      };
+    }
+    try {
+      await this.transporter.verify();
+      return { ok: true };
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      return { ok: false, error: msg };
     }
   }
 
@@ -531,10 +558,10 @@ The FindShopEasily Team
 
   /**
    * Dispatches a 6-digit OTP code for email verification or password reset.
-   * If SMTP is not yet configured, prints the OTP prominently in console for immediate testing.
+   * Delivers live via authenticated SMTP transporter.
    */
   async sendOtpEmail(data: SendOtpInput): Promise<EmailSendResult> {
-    const { to, userName, otp, type, expiresMinutes = 10 } = data;
+    const { to, userName, otp, type, expiresMinutes = 10, resetUrl } = data;
     const isVerification = type === "verification";
     const subject = isVerification
       ? `${otp} is your FindShopEasily verification code`
@@ -543,38 +570,25 @@ The FindShopEasily Team
     const title = isVerification ? "Verify Your Email Address" : "Password Reset Request";
     const message = isVerification
       ? "Thank you for registering with FindShopEasily. Please enter the verification code below in the app or website to confirm your email address:"
-      : "We received a request to reset your password. Please enter the verification code below to verify your identity and set a new password:";
+      : "We received a request to reset your password. You can use the 6-digit verification code below in the app or click the button to reset directly:";
 
     const fromAddress =
       process.env.SMTP_FROM ||
       (process.env.SMTP_USER
-        ? `"FindShopEasily" <${process.env.SMTP_USER}>`
-        : '"FindShopEasily" <no-reply@findshopeasily.com>');
+        ? `"FindShopEasily Support" <${process.env.SMTP_USER}>`
+        : '"FindShopEasily Support" <no-reply@findshopeasily.com>');
 
     if (!this.isConfigured || !this.transporter) {
       this.initTransporter();
     }
 
     if (!this.isConfigured || !this.transporter) {
-      console.log(`
-┌────────────────────────────────────────────────────────────────────────┐
-│ [FindShopEasily Mailer] SIMULATED OTP CODE (Fastest Dev Mode)          │
-├────────────────────────────────────────────────────────────────────────┤
-│ To:           ${to}
-│ Purpose:      ${isVerification ? "EMAIL VERIFICATION" : "PASSWORD RESET"}
-│ User Name:    ${userName}
-│ ONE-TIME CODE: >>> [ ${otp} ] <<<
-│ Validity:     ${expiresMinutes} minutes
-├────────────────────────────────────────────────────────────────────────┤
-│ Note: Enter this OTP directly in the App / Website to complete flow.   │
-│ Set SMTP_HOST or AWS SES credentials in .env to dispatch live emails.  │
-└────────────────────────────────────────────────────────────────────────┘
-      `);
-
+      console.warn(`[EmailService] Cannot send OTP email to ${to}: SMTP transporter is not configured.`);
       return {
-        success: true,
+        success: false,
         delivered: false,
         simulated: true,
+        error: "SMTP service is not configured. Please ensure SMTP_HOST, SMTP_USER, and SMTP_PASS are set in environment.",
       };
     }
 
@@ -585,6 +599,14 @@ The FindShopEasily Team
           `<span style="display:inline-block; width:38px; height:46px; line-height:46px; text-align:center; background:#F4F1EA; border:1.5px solid #344F1F; border-radius:8px; font-size:24px; font-weight:800; color:#344F1F; margin:0 4px; font-family:'Courier New', monospace;">${d}</span>`
       )
       .join("");
+
+    const actionButtonHtml = resetUrl
+      ? `
+        <div style="margin: 22px 0 16px; text-align: center;">
+          <p style="font-size: 13px; color: #4B5563; margin-bottom: 12px;">Or click the button below to reset your password directly:</p>
+          <a href="${resetUrl}" target="_blank" style="display: inline-block; background-color: #344F1F; color: #FFFFFF !important; font-weight: 700; font-size: 13px; text-decoration: none; padding: 12px 26px; border-radius: 12px; box-shadow: 0 2px 8px rgba(52, 79, 31, 0.2);">Reset Password Directly</a>
+        </div>`
+      : "";
 
     const htmlContent = `
 <!DOCTYPE html>
@@ -600,7 +622,7 @@ The FindShopEasily Team
     .header { background: linear-gradient(135deg, #344F1F 0%, #243815 100%); padding: 32px 24px; text-align: center; color: #FFFFFF; }
     .header h1 { margin: 0 0 6px 0; font-size: 22px; font-weight: 800; letter-spacing: -0.5px; }
     .content { padding: 32px 28px; text-align: center; }
-    .otp-box { margin: 28px 0; padding: 18px 12px; background: #FAF8F5; border-radius: 14px; border: 1px dashed #D3E2C4; display: inline-block; }
+    .otp-box { margin: 24px 0; padding: 18px 12px; background: #FAF8F5; border-radius: 14px; border: 1px dashed #D3E2C4; display: inline-block; }
     .footer { font-size: 12px; color: #6B7280; text-align: center; margin-top: 24px; border-top: 1px solid #F3F4F6; padding-top: 16px; }
   </style>
 </head>
@@ -616,8 +638,9 @@ The FindShopEasily Team
         <div class="otp-box">
           ${digitsHtml}
         </div>
+        ${actionButtonHtml}
         <p style="font-size: 13px; color: #6B7280; margin: 16px 0 0 0;">
-          This verification code is valid for <strong>${expiresMinutes} minutes</strong>. Never share this code with anyone.
+          This code is valid for <strong>${expiresMinutes} minutes</strong>. Never share this code with anyone.
         </p>
         <div class="footer">
           <p>FindShopEasily &copy; 2026. All rights reserved.</p>
@@ -637,7 +660,9 @@ ${message}
 YOUR ONE-TIME VERIFICATION CODE:
 ${otp}
 
-This code expires in ${expiresMinutes} minutes. If you did not request this, please ignore this email.
+This code expires in ${expiresMinutes} minutes.
+${resetUrl ? `\nOr reset your password directly using this secure link:\n${resetUrl}\n` : ""}
+If you did not request this, please ignore this email.
 
 Best regards,
 The FindShopEasily Team

@@ -5,14 +5,24 @@
 
 export function getFullMediaUrl(pathOrUrl: string | null | undefined): string | null {
   if (!pathOrUrl) return null;
+  const trimmed = pathOrUrl.trim();
+  if (
+    !trimmed ||
+    trimmed === "null" ||
+    trimmed === "undefined" ||
+    trimmed.includes("photo-1542838132-92c53300491e") ||
+    trimmed.includes("default-product")
+  ) {
+    return null;
+  }
 
   // If already an absolute URL (e.g. placeholder, external URL), return as-is
-  if (pathOrUrl.startsWith("http://") || pathOrUrl.startsWith("https://")) {
-    return pathOrUrl;
+  if (trimmed.startsWith("http://") || trimmed.startsWith("https://")) {
+    return trimmed;
   }
 
   const baseCdnUrl = (process.env.MEDIA_CDN_URL || "").replace(/\/+$/, "");
-  const cleanPath = pathOrUrl.replace(/^\/+/, "");
+  const cleanPath = trimmed.replace(/^\/+/, "");
 
   if (!baseCdnUrl) {
     // Fallback if no CDN or S3 bucket is configured yet
@@ -34,12 +44,16 @@ export function formatMediaUrls<T extends Record<string, any>>(entity: T): T {
     json.logoUrl = getFullMediaUrl(json.logoUrl);
   }
   if ("galleryImages" in json && Array.isArray(json.galleryImages)) {
-    json.galleryImages = json.galleryImages.map((img: string) => getFullMediaUrl(img));
+    json.galleryImages = json.galleryImages
+      .map((img: string) => getFullMediaUrl(img))
+      .filter((img: string | null): img is string => Boolean(img));
   }
 
   // Format product media
   if ("images" in json && Array.isArray(json.images)) {
-    json.images = json.images.map((img: string) => getFullMediaUrl(img));
+    json.images = json.images
+      .map((img: string) => getFullMediaUrl(img))
+      .filter((img: string | null): img is string => Boolean(img));
   }
 
   // Format category media

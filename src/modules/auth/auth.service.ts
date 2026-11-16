@@ -5,7 +5,7 @@ import { Op } from "sequelize";
 import { OAuth2Client } from "google-auth-library";
 import { User, type UserRole } from "../users/user.model";
 import { Shop } from "../shops/shop.model";
-import { NotFoundError, BadRequestError, UnauthorizedError, ConflictError, ForbiddenError } from "../../core/errors/AppError";
+import { NotFoundError, BadRequestError, UnauthorizedError, ConflictError, ForbiddenError, InternalServerError } from "../../core/errors/AppError";
 import { emailService } from "../../core/mail/email.service";
 
 const JWT_SECRET = process.env.JWT_SECRET || "findshop_jwt_secret_dev_key_change_in_prod";
@@ -95,8 +95,8 @@ export class AuthService {
     const salt = await bcrypt.genSalt(10);
     const passwordHash = await bcrypt.hash(data.password, salt);
 
-    // Generate 6-digit numeric OTP for email verification
-    const otp = Math.floor(100000 + Math.random() * 900000).toString();
+    // Generate cryptographically secure 6-digit numeric OTP for email verification
+    const otp = crypto.randomInt(100000, 1000000).toString();
     const otpHash = crypto.createHash("sha256").update(otp).digest("hex");
     const otpExpires = new Date(Date.now() + 10 * 60 * 1000); // 10 minutes
 
@@ -185,7 +185,11 @@ export class AuthService {
     // Role-based portal authorization check
     if (data.expectedRole) {
       const allowed = Array.isArray(data.expectedRole) ? data.expectedRole : [data.expectedRole];
-      if (!allowed.includes(user.role)) {
+      // Consumer portals (mobile app / customer website) allow any valid registered user (customer, shop_admin, super_admin)
+      const effectiveAllowed = allowed.includes("customer")
+        ? ["customer", "shop_admin", "super_admin"]
+        : allowed;
+      if (!effectiveAllowed.includes(user.role)) {
         // Generic security message: NEVER reveal secret role or admin existence
         throw new ForbiddenError("Invalid credentials or access denied for this portal");
       }
@@ -344,8 +348,8 @@ export class AuthService {
     const tokenHash = crypto.createHash("sha256").update(rawToken).digest("hex");
     const tokenExpires = new Date(Date.now() + 30 * 60 * 1000);
 
-    // 2. Generate 6-digit numeric OTP for mobile and quick in-app entry
-    const otp = Math.floor(100000 + Math.random() * 900000).toString();
+    // 2. Generate cryptographically secure 6-digit numeric OTP for mobile and quick in-app entry
+    const otp = crypto.randomInt(100000, 1000000).toString();
     const otpHash = crypto.createHash("sha256").update(otp).digest("hex");
     const otpExpires = new Date(Date.now() + 10 * 60 * 1000); // 10 minutes
 
@@ -365,22 +369,23 @@ export class AuthService {
 
     const resetUrl = `${baseUrl.replace(/\/+$/, "")}/reset-password?token=${rawToken}`;
 
-    // 4. Send email OTP code
-    await emailService.sendOtpEmail({
+    // 4. Send unified password reset email containing both the 6-digit code and direct link
+    const emailResult = await emailService.sendOtpEmail({
       to: user.email,
       userName: user.name,
       otp,
       type: "password_reset",
       expiresMinutes: 10,
+      resetUrl,
     });
 
-    // 5. Send link email (non-blocking)
-    await emailService.sendPasswordResetEmail({
-      to: user.email,
-      userName: user.name,
-      resetUrl,
-      tokenExpiresMinutes: 30,
-    });
+    // 5. Require SMTP acceptance for delivery (do not return false positive if SMTP failed)
+    if (!emailResult.success || !emailResult.delivered) {
+      console.error(`[AuthService] Password reset email failed for ${user.email}: ${emailResult.error}`);
+      throw new InternalServerError(
+        "Failed to dispatch password reset code via email. Please check email service configuration or try again later."
+      );
+    }
 
     return genericResponse;
   }
@@ -563,20 +568,26 @@ export class AuthService {
       return { message: "This email is already verified. You can log in directly." };
     }
 
-    const otp = Math.floor(100000 + Math.random() * 900000).toString();
+    const otp = crypto.randomInt(100000, 1000000).toString();
     const otpHash = crypto.createHash("sha256").update(otp).digest("hex");
 
     user.emailVerificationOtp = otpHash;
     user.emailVerificationOtpExpires = new Date(Date.now() + 10 * 60 * 1000);
     await user.save();
 
-    await emailService.sendOtpEmail({
+    const emailResult = await emailService.sendOtpEmail({
       to: user.email,
       userName: user.name,
       otp,
       type: "verification",
       expiresMinutes: 10,
     });
+
+    if (!emailResult.success || !emailResult.delivered) {
+      throw new InternalServerError(
+        "Failed to dispatch verification email. Please verify SMTP service or try again later."
+      );
+    }
 
     return { message: "A new 6-digit verification code has been dispatched to your email." };
   }
@@ -761,7 +772,11 @@ export class AuthService {
     // Role-based portal authorization check
     if (expectedRole) {
       const allowed = Array.isArray(expectedRole) ? expectedRole : [expectedRole];
-      if (!allowed.includes(user.role)) {
+      // Consumer portals (mobile app / customer website) allow any valid registered user (customer, shop_admin, super_admin)
+      const effectiveAllowed = allowed.includes("customer")
+        ? ["customer", "shop_admin", "super_admin"]
+        : allowed;
+      if (!effectiveAllowed.includes(user.role)) {
         throw new ForbiddenError("Invalid credentials or access denied for this portal");
       }
     }

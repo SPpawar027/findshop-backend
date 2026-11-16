@@ -337,6 +337,15 @@ export class ProductService {
   }
 
   async create(data: CreateProductInput): Promise<Product> {
+    const cleanImages = (data.images || []).filter(
+      (img) =>
+        typeof img === "string" &&
+        img.trim() &&
+        !img.includes("photo-1542838132-92c53300491e") &&
+        !img.includes("default-product")
+    );
+    data.images = cleanImages;
+
     if (data.images && data.images.length > 3) {
       throw new BadRequestError("A product can have a maximum of 3 images");
     }
@@ -445,6 +454,16 @@ export class ProductService {
     const product = await Product.findByPk(id);
     if (!product) {
       throw new NotFoundError(`Product with id ${id} not found`);
+    }
+
+    if (data.images) {
+      data.images = data.images.filter(
+        (img) =>
+          typeof img === "string" &&
+          img.trim() &&
+          !img.includes("photo-1542838132-92c53300491e") &&
+          !img.includes("default-product")
+      );
     }
 
     if (data.images && data.images.length > 3) {
