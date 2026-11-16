@@ -6,7 +6,12 @@
 // DATABASE_URL_UNPOOLED is the direct connection; falls back to DATABASE_URL for
 // local Postgres where pooling is irrelevant.
 
-require("dotenv").config();
+const dotenv = require("dotenv");
+if (process.env.DOTENV_CONFIG_PATH) {
+  dotenv.config({ path: process.env.DOTENV_CONFIG_PATH });
+} else {
+  dotenv.config();
+}
 
 const databaseUrl =
   process.env.DATABASE_URL_UNPOOLED || process.env.DATABASE_URL;
