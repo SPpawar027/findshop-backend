@@ -99,7 +99,9 @@ export function createApp(): express.Application {
         : {}),
     });
   });
-
+  app.get("/api/debug-sentry", (_req, _res) => {
+    throw new Error("FindShop Sentry Test Error - Everything is working!");
+  });
   // Know Backend & Deployment Details (/knowbackend and /api/knowbackend)
   const handleKnowBackend = async (_req: express.Request, res: express.Response) => {
     try {

@@ -1,3 +1,4 @@
+import "./instrument"; // <-- Must be line 1 before everything else!
 import { createApp } from "./app";
 import { sequelize } from "./database";
 import { env } from "./config/env";

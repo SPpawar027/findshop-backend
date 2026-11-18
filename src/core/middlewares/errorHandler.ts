@@ -1,6 +1,7 @@
 import type { Request, Response, NextFunction } from "express";
 import { AppError } from "../errors/AppError";
 import { env } from "../../config/env";
+import * as Sentry from "@sentry/node";
 
 export function errorHandler(
   err: Error,
@@ -33,6 +34,7 @@ export function errorHandler(
     });
     return;
   }
+  Sentry.captureException(err);
 
   // 3. Unexpected Server Errors (500)
   // Full stack trace is logged safely to server terminal/logs
