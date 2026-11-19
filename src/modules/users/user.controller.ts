@@ -55,8 +55,27 @@ export class UserController {
       if (isNaN(id)) {
         throw new BadRequestError("Invalid user ID");
       }
+      const authReq = req as any;
+      if (authReq.user?.id === id) {
+        throw new BadRequestError("Administrators cannot delete their own account using administrative delete. Use the self-deletion endpoint.");
+      }
       await userService.delete(id);
       sendSuccess(res, null, "User deactivated successfully");
+    } catch (error) {
+      next(error);
+    }
+  }
+
+  async deleteSelf(req: Request, res: Response, next: NextFunction): Promise<void> {
+    try {
+      const authReq = req as any;
+      const id = Number(authReq.user?.id);
+      if (!id || isNaN(id)) {
+        throw new BadRequestError("User authentication required");
+      }
+      const reason = req.body?.reason ? String(req.body.reason) : undefined;
+      await userService.deleteSelf(id, reason);
+      sendSuccess(res, null, "Account and personal data have been permanently deactivated and anonymized.");
     } catch (error) {
       next(error);
     }

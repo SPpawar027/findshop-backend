@@ -71,5 +71,17 @@ export function formatMediaUrls<T extends Record<string, any>>(entity: T): T {
     json.products = json.products.map((p: any) => formatMediaUrls(p));
   }
 
+  // Format nested categories & subcategories (in shop detail / category tree)
+  if ("categories" in json && Array.isArray(json.categories)) {
+    json.categories = json.categories.map((c: any) =>
+      c && typeof c === "object" ? formatMediaUrls(c) : c
+    );
+  }
+  if ("subcategories" in json && Array.isArray(json.subcategories)) {
+    json.subcategories = json.subcategories.map((s: any) =>
+      s && typeof s === "object" ? formatMediaUrls(s) : s
+    );
+  }
+
   return json as T;
 }

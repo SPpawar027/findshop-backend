@@ -15,6 +15,7 @@ export function errorHandler(
     res.status(err.statusCode).json({
       success: false,
       message: err.message,
+      ...(err.details ? { details: err.details } : {}),
       // Uncomment below only for temporary local debugging:
       // ...(env.isDev ? { stack: err.stack } : {}),
     });

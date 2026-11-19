@@ -404,8 +404,10 @@ export class DashboardService {
       Product.count({
         where: {
           shopId,
-          discountPrice: { [Op.ne]: null },
           isAvailable: true,
+          [Op.and]: [
+            literal(`"Product"."discountPrice" IS NOT NULL AND "Product"."discountPrice" > 0 AND "Product"."discountPrice" < "Product"."price"`),
+          ],
         },
       }),
       Product.findAll({

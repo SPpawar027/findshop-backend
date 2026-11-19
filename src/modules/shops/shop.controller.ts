@@ -11,6 +11,9 @@ export class ShopController {
     try {
       const query = {
         ...req.query,
+        categoryId: req.query.categoryId !== undefined && req.query.categoryId !== ""
+          ? Number(req.query.categoryId)
+          : undefined,
         page: req.query.page !== undefined ? Math.max(1, Number(req.query.page)) : 1,
         limit: req.query.limit !== undefined ? Math.min(100, Math.max(1, Number(req.query.limit))) : 20,
         lat: req.query.lat !== undefined ? Number(req.query.lat) : undefined,
@@ -141,7 +144,7 @@ export class ShopController {
 
   async getNearby(req: Request, res: Response, next: NextFunction): Promise<void> {
     try {
-      const { lat, lng, radius, limit } = req.query;
+      const { lat, lng, radius, limit, category, categoryId } = req.query;
       const parsedLimit = Math.min(100, Math.max(1, Number(limit || 20)));
 
       // If lat/lng are omitted, return general active and verified shops instead of failing
@@ -150,6 +153,8 @@ export class ShopController {
           limit: parsedLimit,
           status: "active",
           activeOnly: true,
+          category: typeof category === "string" ? category : undefined,
+          categoryId: categoryId !== undefined && categoryId !== "" ? Number(categoryId) : undefined,
         });
         const formattedShops = result.shops.map((s) => formatMediaUrls(s));
         sendSuccess(res, formattedShops, "General shops fetched successfully (location omitted)", 200, result.meta);
@@ -164,6 +169,8 @@ export class ShopController {
         longitude,
         radiusKm: radius ? Number(radius) : undefined,
         limit: parsedLimit,
+        category: typeof category === "string" ? category : undefined,
+        categoryId: categoryId !== undefined && categoryId !== "" ? Number(categoryId) : undefined,
       });
 
       const formattedShops = shops.map((s) => formatMediaUrls(s));
@@ -231,8 +238,42 @@ export class ShopController {
       if (isNaN(id)) {
         throw new BadRequestError("Invalid shop ID");
       }
-      await shopService.delete(id);
-      sendSuccess(res, null, "Shop deleted successfully");
+      const authReq = req as AuthenticatedRequest;
+      if (!authReq.user) {
+        throw new ForbiddenError("Authentication required");
+      }
+
+      const reason = req.body?.reason ? String(req.body.reason) : undefined;
+      const result = await shopService.softDelete(id, authReq.user, reason);
+
+      sendSuccess(
+        res,
+        {
+          shopId: id,
+          deletionRequestedAt: result.shop.deletionRequestedAt,
+          purgeAfter: result.purgeAfter,
+          recoveryDaysRemaining: 30,
+        },
+        "Shop scheduled for deletion. It is now hidden from customer discovery and can be restored within 30 days."
+      );
+    } catch (error) {
+      next(error);
+    }
+  }
+
+  async restore(req: Request, res: Response, next: NextFunction): Promise<void> {
+    try {
+      const id = Number(req.params.id);
+      if (isNaN(id)) {
+        throw new BadRequestError("Invalid shop ID");
+      }
+      const authReq = req as AuthenticatedRequest;
+      if (!authReq.user) {
+        throw new ForbiddenError("Authentication required");
+      }
+
+      const restoredShop = await shopService.restore(id, authReq.user);
+      sendSuccess(res, formatMediaUrls(restoredShop), "Shop restored successfully");
     } catch (error) {
       next(error);
     }

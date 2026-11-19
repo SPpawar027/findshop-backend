@@ -9,11 +9,43 @@ import type { AuthenticatedRequest } from "../../core/middlewares/auth.middlewar
 export class ProductController {
   async getAll(req: Request, res: Response, next: NextFunction): Promise<void> {
     try {
+      const rawCatId = req.query.subcategoryId ?? req.query.categoryId;
+      const parsedCatId =
+        rawCatId !== undefined && rawCatId !== "" && !isNaN(Number(rawCatId))
+          ? Number(rawCatId)
+          : undefined;
+
+      const parsedShopId =
+        req.query.shopId !== undefined && req.query.shopId !== "" && !isNaN(Number(req.query.shopId))
+          ? Number(req.query.shopId)
+          : undefined;
+
+      const rawPage = req.query.page !== undefined ? Number(req.query.page) : 1;
+      const rawLimit =
+        req.query.limit !== undefined
+          ? Number(req.query.limit)
+          : parsedShopId
+            ? 12
+            : 20;
+
+      const isAvailableParam =
+        req.query.isAvailable !== undefined
+          ? req.query.isAvailable === "true"
+          : req.query.availableOnly === "true"
+            ? true
+            : undefined;
+
+      const userRole = (req as any).user?.role;
+      const isAdminCaller = userRole === "super_admin" || userRole === "shop_admin";
+
       const query = {
         ...req.query,
-        page: req.query.page !== undefined ? Math.max(1, Number(req.query.page)) : 1,
-        limit: req.query.limit !== undefined ? Math.min(100, Math.max(1, Number(req.query.limit))) : 20,
-        categoryId: req.query.categoryId !== undefined ? Number(req.query.categoryId) : undefined,
+        shopId: parsedShopId,
+        page: !isNaN(rawPage) && rawPage >= 1 ? Math.floor(rawPage) : 1,
+        limit: !isNaN(rawLimit) ? Math.min(50, Math.max(1, Math.floor(rawLimit))) : 12,
+        categoryId: parsedCatId,
+        isAvailable: isAvailableParam,
+        allowSuspended: req.query.allowSuspended === "true" || isAdminCaller,
         lat: req.query.lat !== undefined ? Number(req.query.lat) : undefined,
         lng: req.query.lng !== undefined ? Number(req.query.lng) : undefined,
         radiusKm: req.query.radius !== undefined

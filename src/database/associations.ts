@@ -10,6 +10,7 @@ import { ShopAnalyticsEvent } from "../modules/analytics/shopAnalyticsEvent.mode
 import { ShopAnalyticsDaily } from "../modules/analytics/shopAnalyticsDaily.model";
 import { ShopAnalyticsUniqueVisitor } from "../modules/analytics/shopAnalyticsUniqueVisitor.model";
 import { ShopSubcategory } from "../modules/categories/shopSubcategory.model";
+import { ShopCategory } from "../modules/shops/shopCategory.model";
 
 /**
  * ============================================================================
@@ -250,6 +251,45 @@ export function setupAssociations(): void {
   ShopSubcategory.belongsTo(Category, {
     foreignKey: "subcategoryId",
     as: "subcategory",
+  });
+
+  // --------------------------------------------------------------------------
+  // RELATIONSHIP 9: Shop <-> Category (Many-to-Many L1 Shop Categories, max 3)
+  // --------------------------------------------------------------------------
+  Shop.hasMany(ShopCategory, {
+    foreignKey: "shopId",
+    as: "shopCategories",
+    onDelete: "CASCADE",
+  });
+
+  ShopCategory.belongsTo(Shop, {
+    foreignKey: "shopId",
+    as: "shop",
+  });
+
+  Category.hasMany(ShopCategory, {
+    foreignKey: "categoryId",
+    as: "shopCategories",
+    onDelete: "RESTRICT",
+  });
+
+  ShopCategory.belongsTo(Category, {
+    foreignKey: "categoryId",
+    as: "category",
+  });
+
+  Shop.belongsToMany(Category, {
+    through: ShopCategory,
+    foreignKey: "shopId",
+    otherKey: "categoryId",
+    as: "categories",
+  });
+
+  Category.belongsToMany(Shop, {
+    through: ShopCategory,
+    foreignKey: "categoryId",
+    otherKey: "shopId",
+    as: "shops",
   });
 }
 

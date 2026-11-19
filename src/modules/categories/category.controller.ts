@@ -235,7 +235,13 @@ export class CategoryController {
       }
 
       const parentId = req.query.parentId ? Number(req.query.parentId) : undefined;
-      const subcats = await categoryService.getShopSubcategories(shopId, parentId);
+      const onlyWithProducts = req.query.onlyWithProducts === "true";
+      const onlyVisible = req.query.onlyVisible === "true";
+      const subcats = await categoryService.getShopSubcategories(shopId, {
+        parentId,
+        onlyWithProducts,
+        onlyVisible,
+      });
       const formatted = subcats.map((sub) => formatMediaUrls(sub));
       sendSuccess(res, formatted, "Shop subcategories fetched successfully");
     } catch (error) {

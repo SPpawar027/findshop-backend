@@ -10,10 +10,12 @@ import {
 import { sequelize } from "../../config/database";
 import type { User } from "../users/user.model";
 import type { Product } from "../products/product.model";
+import type { ShopCategory } from "./shopCategory.model";
+import type { Category } from "../categories/category.model";
 
 export class Shop extends Model<
-  InferAttributes<Shop, { omit: "owner" | "products" }>,
-  InferCreationAttributes<Shop, { omit: "owner" | "products" }>
+  InferAttributes<Shop, { omit: "owner" | "products" | "shopCategories" | "categories" }>,
+  InferCreationAttributes<Shop, { omit: "owner" | "products" | "shopCategories" | "categories" }>
 > {
   declare id: CreationOptional<number>;
   declare ownerId: ForeignKey<User["id"]>;
@@ -36,12 +38,19 @@ export class Shop extends Model<
   declare openingHours: Record<string, unknown> | null;
   declare bannerUrl: string | null;
   declare logoUrl: string | null;
+  declare deletedAt: CreationOptional<Date | null>;
+  declare deletionRequestedAt: CreationOptional<Date | null>;
+  declare purgeAfter: CreationOptional<Date | null>;
+  declare deletionReason: CreationOptional<string | null>;
+  declare deletedByUserId: CreationOptional<number | null>;
   declare createdAt: CreationOptional<Date>;
   declare updatedAt: CreationOptional<Date>;
 
   // Associations
   declare owner?: NonAttribute<User>;
   declare products?: NonAttribute<Product[]>;
+  declare shopCategories?: NonAttribute<ShopCategory[]>;
+  declare categories?: NonAttribute<Category[]>;
 }
 
 Shop.init(
@@ -152,6 +161,26 @@ Shop.init(
       type: DataTypes.STRING(500),
       allowNull: true,
     },
+    deletedAt: {
+      type: DataTypes.DATE,
+      allowNull: true,
+    },
+    deletionRequestedAt: {
+      type: DataTypes.DATE,
+      allowNull: true,
+    },
+    purgeAfter: {
+      type: DataTypes.DATE,
+      allowNull: true,
+    },
+    deletionReason: {
+      type: DataTypes.STRING(500),
+      allowNull: true,
+    },
+    deletedByUserId: {
+      type: DataTypes.INTEGER,
+      allowNull: true,
+    },
     createdAt: {
       type: DataTypes.DATE,
       defaultValue: DataTypes.NOW,
@@ -165,5 +194,6 @@ Shop.init(
     sequelize,
     tableName: "shops",
     timestamps: true,
+    paranoid: true,
   }
 );

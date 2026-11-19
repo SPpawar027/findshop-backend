@@ -1,5 +1,7 @@
 import { User, type UserRole } from "./user.model";
-import { NotFoundError, ConflictError } from "../../core/errors/AppError";
+import { Shop } from "../shops/shop.model";
+import { Review } from "../reviews/review.model";
+import { NotFoundError, ConflictError, BadRequestError } from "../../core/errors/AppError";
 
 export interface CreateUserInput {
   name: string;
@@ -92,6 +94,67 @@ export class UserService {
 
     // Soft delete by setting isActive to false
     await user.update({ isActive: false });
+  }
+
+  /**
+   * User-initiated self account deletion (mandated by Google Play & App Store policies).
+   * Verifies that the user has no active shops, revokes credentials, and anonymizes personal data.
+   */
+  async deleteSelf(userId: number, reason?: string): Promise<void> {
+    const user = await User.findByPk(userId);
+    if (!user) {
+      throw new NotFoundError("User not found");
+    }
+
+    if (!user.isActive) {
+      throw new BadRequestError("Account is already deactivated");
+    }
+
+    // Business rule: If user is a merchant who still owns an active shop, require shop closure first
+    const activeShop = await Shop.findOne({
+      where: {
+        ownerId: userId,
+        deletedAt: null,
+      },
+    });
+
+    if (activeShop) {
+      throw new BadRequestError(
+        `Cannot delete account: You are the registered owner of an active shop ("${activeShop.name}"). Please schedule shop closure in Settings before deleting your personal account.`
+      );
+    }
+
+    const timestamp = Date.now();
+    const anonymizedEmail = `deleted_${userId}_${timestamp}@anonymized.findshopeasily.com`;
+
+    // 1. Anonymize personal identifiable information (PII) and deactivate account
+    await user.update({
+      isActive: false,
+      name: "Deleted Account",
+      email: anonymizedEmail,
+      passwordHash: null,
+      phone: null,
+      avatarUrl: null,
+      googleId: null,
+      emailVerificationOtp: null,
+      emailVerificationOtpExpires: null,
+      passwordResetOtp: null,
+      passwordResetOtpExpires: null,
+      resetPasswordToken: null,
+      resetPasswordExpires: null,
+    });
+
+    // 2. Anonymize author name in existing reviews to preserve ratings without leaking personal name
+    await Review.update(
+      { authorName: "Deleted User" },
+      { where: { userId } }
+    ).catch((err) => {
+      console.warn(`[Review Anonymization Warning] Failed to update reviews for user ${userId}:`, err?.message);
+    });
+
+    console.log(
+      `[Account Deletion] User ID ${userId} successfully anonymized and deactivated. Reason: ${reason || "Self-deletion"}`
+    );
   }
 }
 

@@ -1,12 +1,27 @@
 import { Op, literal } from "sequelize";
 import bcrypt from "bcryptjs";
+import { sequelize } from "../../config/database";
 import { Shop } from "./shop.model";
+import { ShopCategory } from "./shopCategory.model";
+import { Category } from "../categories/category.model";
 import { User } from "../users/user.model";
 import { Product } from "../products/product.model";
-import { NotFoundError } from "../../core/errors/AppError";
+import { NotFoundError, BadRequestError, ForbiddenError } from "../../core/errors/AppError";
+import type { AuthenticatedUser } from "../../core/middlewares/auth.middleware";
 import { emailService } from "../../core/mail/email.service";
 import { uploadService } from "../upload/upload.service";
 import { storageService } from "../../core/storage/storage.service";
+import {
+  ShopCategorySummary,
+  validateShopCategorySelection,
+  resolveLegacyCategoryName,
+  getEffectiveShopL1Categories,
+  batchFetchShopCategoriesMap,
+  assertSafeCategoryRemoval,
+  syncShopCategoriesInTransaction,
+  attachShopCategoriesMeta,
+  slugifyCategoryName,
+} from "./shopCategory.helper";
 import {
   calculateHaversineDistance,
   formatDistance,
@@ -22,6 +37,7 @@ import {
 
 export interface ListShopsQuery {
   category?: string;
+  categoryId?: number;
   city?: string;
   search?: string;
   page?: number;
@@ -40,6 +56,8 @@ export interface NearbyShopsQuery {
   longitude: number;
   radiusKm?: number;
   limit?: number;
+  category?: string;
+  categoryId?: number;
 }
 
 function generateSecureTempPassword(): string {
@@ -60,7 +78,9 @@ export interface CreateShopInput {
   name: string;
   slug: string;
   description?: string | null;
-  category: string;
+  category?: string;
+  categoryIds?: number[];
+  primaryCategoryId?: number;
   address: string;
   city: string;
   state: string;
@@ -95,6 +115,9 @@ export interface ShopDetailResponse {
   slug: string;
   description: string | null;
   category: string;
+  categories: ShopCategorySummary[];
+  categoryIds: number[];
+  primaryCategoryId: number | null;
   address: string;
   city: string;
   state: string;
@@ -142,12 +165,90 @@ export interface ShopDetailResponse {
 }
 
 export class ShopService {
+  /**
+   * Resolves shop IDs matching a main category filter (by ID, name, or slug)
+   * using the normalized `shop_categories` table, with safe fallback if the
+   * migration hasn't been executed yet.
+   */
+  private async resolveShopIdsForCategoryFilter(
+    categoryId?: number,
+    category?: string
+  ): Promise<{ matchedCategoryIds: number[]; matchedShopIds: number[]; matchedCategoryNames: string[] }> {
+    const matchedCategoryIds = new Set<number>();
+    const matchedCategoryNames = new Set<string>();
+
+    if (categoryId && Number.isInteger(Number(categoryId)) && Number(categoryId) > 0) {
+      const cat = await Category.findByPk(Number(categoryId), {
+        attributes: ["id", "name", "level", "parentId"],
+      });
+      if (cat) {
+        // If someone passes an L2 subcategory ID to shop discovery, resolve its parent L1 category
+        const targetId = cat.level === 2 && cat.parentId ? cat.parentId : cat.id;
+        matchedCategoryIds.add(targetId);
+        matchedCategoryNames.add(cat.name);
+        if (targetId !== cat.id) {
+          const parent = await Category.findByPk(targetId, { attributes: ["id", "name"] });
+          if (parent) matchedCategoryNames.add(parent.name);
+        }
+      } else {
+        matchedCategoryIds.add(Number(categoryId));
+      }
+    }
+
+    if (category && category.trim() && category.trim().toLowerCase() !== "all") {
+      const clean = category.trim();
+      const slug = slugifyCategoryName(clean);
+      const cats = await Category.findAll({
+        where: {
+          level: 1,
+          [Op.or]: [
+            { name: { [Op.iLike]: clean } },
+            { slug: { [Op.iLike]: slug } },
+            { name: { [Op.iLike]: `%${clean}%` } },
+          ],
+        },
+        attributes: ["id", "name"],
+      });
+      for (const c of cats) {
+        matchedCategoryIds.add(c.id);
+        matchedCategoryNames.add(c.name);
+      }
+      matchedCategoryNames.add(clean);
+    }
+
+    const catIdList = Array.from(matchedCategoryIds);
+    let matchedShopIds: number[] = [];
+
+    if (catIdList.length > 0) {
+      try {
+        const scRows = await ShopCategory.findAll({
+          where: { categoryId: { [Op.in]: catIdList } },
+          attributes: ["shopId"],
+        });
+        matchedShopIds = Array.from(new Set(scRows.map((r) => r.shopId)));
+      } catch (err: any) {
+        if (err?.parent?.code === "42P01" || String(err?.message || "").includes("shop_categories")) {
+          matchedShopIds = [];
+        } else {
+          throw err;
+        }
+      }
+    }
+
+    return {
+      matchedCategoryIds: catIdList,
+      matchedShopIds,
+      matchedCategoryNames: Array.from(matchedCategoryNames),
+    };
+  }
+
   async findAll(query: ListShopsQuery = {}) {
     const page = Math.max(1, Number(query.page || 1));
     const limit = Math.min(100, Math.max(1, Number(query.limit || 20)));
     const offset = (page - 1) * limit;
 
     const where: Record<string, unknown> = {};
+    const andConditions: any[] = [];
 
     // Status filter: Public consumers only see open & verified shops.
     // SuperAdmin or admin consoles explicitly pass status="all" to see all shops including suspended.
@@ -172,8 +273,35 @@ export class ShopService {
       where.isVerified = true;
     }
 
-    if (query.category) {
-      where.category = query.category;
+    // Multi-category discovery filter: matches ANY of a shop's 1..3 assigned categories
+    // without causing duplicate shop rows or inflated totals.
+    const hasCategoryFilter =
+      (query.categoryId !== undefined && !isNaN(Number(query.categoryId))) ||
+      (typeof query.category === "string" &&
+        query.category.trim() !== "" &&
+        query.category.trim().toLowerCase() !== "all");
+
+    if (hasCategoryFilter) {
+      const { matchedShopIds, matchedCategoryNames } = await this.resolveShopIdsForCategoryFilter(
+        query.categoryId,
+        query.category
+      );
+
+      const categoryOrConditions: any[] = [];
+      if (matchedShopIds.length > 0) {
+        categoryOrConditions.push({ id: { [Op.in]: matchedShopIds } });
+      }
+      // Backward compatibility for legacy shops not yet backfilled into shop_categories
+      for (const catName of matchedCategoryNames) {
+        categoryOrConditions.push({ category: { [Op.iLike]: catName } });
+      }
+
+      if (categoryOrConditions.length > 0) {
+        andConditions.push({ [Op.or]: categoryOrConditions });
+      } else {
+        // Explicit non-matching categoryId/name => return empty set safely
+        andConditions.push({ id: -1 });
+      }
     }
 
     if (query.city) {
@@ -181,17 +309,40 @@ export class ShopService {
     }
 
     if (query.search && query.search.trim()) {
-      const s = `%${query.search.trim()}%`;
-      where[Op.or as unknown as string] = [
+      const trimmedSearch = query.search.trim();
+      const s = `%${trimmedSearch}%`;
+      const searchOrConditions: any[] = [
         { name: { [Op.iLike]: s } },
         { description: { [Op.iLike]: s } },
         { category: { [Op.iLike]: s } },
         { city: { [Op.iLike]: s } },
       ];
+
+      // Also match shops assigned to any L1 category whose name matches the search query
+      try {
+        const matchingCats = await Category.findAll({
+          where: { level: 1, name: { [Op.iLike]: s } },
+          attributes: ["id"],
+        });
+        if (matchingCats.length > 0) {
+          const scRows = await ShopCategory.findAll({
+            where: { categoryId: { [Op.in]: matchingCats.map((c) => c.id) } },
+            attributes: ["shopId"],
+          });
+          const scShopIds = Array.from(new Set(scRows.map((r) => r.shopId)));
+          if (scShopIds.length > 0) {
+            searchOrConditions.push({ id: { [Op.in]: scShopIds } });
+          }
+        }
+      } catch {
+        // Safe fallback if shop_categories isn't migrated yet
+      }
+
+      andConditions.push({ [Op.or]: searchOrConditions });
     }
 
     let attributes: any = undefined;
-    let order: any = [["rating", "DESC"], ["createdAt", "DESC"]];
+    let order: any = [["rating", "DESC"], ["createdAt", "DESC"], ["id", "ASC"]];
 
     const hasLocation =
       query.lat !== undefined &&
@@ -217,33 +368,39 @@ export class ShopService {
 
       if (query.radiusKm && !isNaN(Number(query.radiusKm))) {
         const radius = Number(query.radiusKm);
-        where[Op.and as unknown as string] = literal(`
-          (6371 * acos(
-            least(1.0, greatest(-1.0,
-              cos(radians(${lat})) * cos(radians(latitude)) *
-              cos(radians(longitude) - radians(${lng})) +
-              sin(radians(${lat})) * sin(radians(latitude))
-            ))
-          )) <= ${radius}
-        `);
+        andConditions.push(
+          literal(`
+            (6371 * acos(
+              least(1.0, greatest(-1.0,
+                cos(radians(${lat})) * cos(radians(latitude)) *
+                cos(radians(longitude) - radians(${lng})) +
+                sin(radians(${lat})) * sin(radians(latitude))
+              ))
+            )) <= ${radius}
+          `)
+        );
       }
 
       const sortOption = (query.sortBy || "").toLowerCase().trim();
       if (sortOption === "rating") {
-        order = [["rating", "DESC"], ["createdAt", "DESC"]];
+        order = [["rating", "DESC"], ["createdAt", "DESC"], ["id", "ASC"]];
       } else if (sortOption === "newest") {
-        order = [["createdAt", "DESC"]];
+        order = [["createdAt", "DESC"], ["id", "ASC"]];
       } else {
         // Default when location is present: Proximity-first ranking
-        order = [[distanceLiteral, "ASC"], ["rating", "DESC"]];
+        order = [[distanceLiteral, "ASC"], ["rating", "DESC"], ["id", "ASC"]];
       }
     } else {
       const sortOption = (query.sortBy || "").toLowerCase().trim();
       if (sortOption === "newest") {
-        order = [["createdAt", "DESC"]];
+        order = [["createdAt", "DESC"], ["id", "ASC"]];
       } else {
-        order = [["rating", "DESC"], ["createdAt", "DESC"]];
+        order = [["rating", "DESC"], ["createdAt", "DESC"], ["id", "ASC"]];
       }
+    }
+
+    if (andConditions.length > 0) {
+      where[Op.and as unknown as string] = andConditions;
     }
 
     const { count, rows } = await Shop.findAndCountAll({
@@ -254,10 +411,15 @@ export class ShopService {
       order,
     });
 
+    const categoriesMap = await batchFetchShopCategoriesMap(rows);
+    const enrichedShops = rows.map((row) =>
+      attachShopCategoriesMeta(row.toJSON(), categoriesMap.get(row.id) || [])
+    );
+
     const totalPages = Math.ceil(count / limit);
 
     return {
-      shops: rows,
+      shops: enrichedShops,
       meta: {
         page,
         limit,
@@ -336,10 +498,10 @@ export class ShopService {
     const productsPage = Math.max(1, Number(query.productsPage || 1));
     const productsOffset = (productsPage - 1) * productsLimit;
 
-    const [filteredProducts, allShopProducts] = await Promise.all([
+    const [filteredProducts, allShopProducts, shopCategories] = await Promise.all([
       Product.findAll({
         where: productWhere,
-        order: [["createdAt", "DESC"]],
+        order: [["sortOrder", "ASC"], ["createdAt", "DESC"], ["id", "ASC"]],
         limit: productsLimit,
         offset: productsOffset,
       }),
@@ -347,6 +509,7 @@ export class ShopService {
         where: { shopId: shop.id },
         attributes: ["category"],
       }),
+      getEffectiveShopL1Categories(shop),
     ]);
 
     // Compute distinct product categories
@@ -401,7 +564,7 @@ export class ShopService {
       new Set([shop.bannerUrl, ...productImages].filter(Boolean) as string[])
     );
 
-    const shopJson = shop.toJSON();
+    const shopJson = attachShopCategoriesMeta(shop.toJSON(), shopCategories);
 
     return {
       ...shopJson,
@@ -441,7 +604,7 @@ export class ShopService {
     return this.getDetail(slug, query);
   }
 
-  async findNearby({ latitude, longitude, radiusKm = 10, limit = 20 }: NearbyShopsQuery) {
+  async findNearby({ latitude, longitude, radiusKm = 10, limit = 20, category, categoryId }: NearbyShopsQuery) {
     // Haversine formula in kilometers: 6371 * acos(...)
     const distanceLiteral = literal(`
       (6371 * acos(
@@ -453,32 +616,54 @@ export class ShopService {
       ))
     `);
 
+    const andConditions: any[] = [
+      { isOpen: true, isVerified: true },
+      literal(`
+        (6371 * acos(
+          least(1.0, greatest(-1.0,
+            cos(radians(${Number(latitude)})) * cos(radians(latitude)) *
+            cos(radians(longitude) - radians(${Number(longitude)})) +
+            sin(radians(${Number(latitude)})) * sin(radians(latitude))
+          ))
+        )) <= ${Number(radiusKm)}
+      `),
+    ];
+
+    const hasCategoryFilter =
+      (categoryId !== undefined && !isNaN(Number(categoryId))) ||
+      (typeof category === "string" && category.trim() !== "" && category.trim().toLowerCase() !== "all");
+
+    if (hasCategoryFilter) {
+      const { matchedShopIds, matchedCategoryNames } = await this.resolveShopIdsForCategoryFilter(
+        categoryId,
+        category
+      );
+      const catOr: any[] = [];
+      if (matchedShopIds.length > 0) catOr.push({ id: { [Op.in]: matchedShopIds } });
+      for (const name of matchedCategoryNames) catOr.push({ category: { [Op.iLike]: name } });
+      if (catOr.length > 0) {
+        andConditions.push({ [Op.or]: catOr });
+      } else {
+        andConditions.push({ id: -1 });
+      }
+    }
+
     const shops = await Shop.findAll({
       attributes: {
         include: [[distanceLiteral, "distanceKm"]],
       },
       where: {
-        [Op.and]: [
-          { isOpen: true, isVerified: true },
-          literal(`
-            (6371 * acos(
-              least(1.0, greatest(-1.0,
-                cos(radians(${Number(latitude)})) * cos(radians(latitude)) *
-                cos(radians(longitude) - radians(${Number(longitude)})) +
-                sin(radians(${Number(latitude)})) * sin(radians(latitude))
-              ))
-            )) <= ${Number(radiusKm)}
-          `),
-        ],
+        [Op.and]: andConditions,
       },
       order: literal(`"distanceKm" ASC`),
       limit: Math.min(100, Number(limit || 20)),
     });
 
-    return shops;
+    const categoriesMap = await batchFetchShopCategoriesMap(shops);
+    return shops.map((s) => attachShopCategoriesMeta(s.toJSON(), categoriesMap.get(s.id) || []));
   }
 
-  async create(data: CreateShopInput): Promise<Shop> {
+  async create(data: CreateShopInput): Promise<any> {
     const targetEmail = (data.ownerEmail || data.email || "").toLowerCase().trim();
     const targetName = (data.ownerName || data.name || "Merchant Partner").trim();
     const targetPhone = (data.ownerPhone || data.phone || "").trim() || null;
@@ -487,52 +672,97 @@ export class ShopService {
     let tempPasswordGenerated: string | null = null;
     let isNewUserCreated = false;
 
-    if (targetEmail) {
-      let user = await User.findOne({ where: { email: targetEmail } });
+    const { shop, assignedCategories } = await sequelize.transaction(async (t) => {
+      // 1. Validate category selection upfront (supports categoryIds[] OR legacy category string)
+      let validatedSelection = null;
+      let resolvedCategoryName = (data.category || "").trim();
 
-      if (!user) {
-        tempPasswordGenerated = generateSecureTempPassword();
-        const salt = await bcrypt.genSalt(10);
-        const passwordHash = await bcrypt.hash(tempPasswordGenerated, salt);
-
-        user = await User.create({
-          name: targetName,
-          email: targetEmail,
-          passwordHash,
-          phone: targetPhone,
-          role: "shop_admin",
-          isActive: true,
-        });
-        isNewUserCreated = true;
-      } else if (user.role === "customer") {
-        // Upgrade customer to shop_admin so they can access merchant admin console
-        await user.update({ role: "shop_admin" });
+      if (data.categoryIds !== undefined) {
+        validatedSelection = await validateShopCategorySelection(
+          data.categoryIds,
+          data.primaryCategoryId,
+          t
+        );
+        resolvedCategoryName = validatedSelection.primaryCategory.name;
+      } else if (resolvedCategoryName) {
+        const legacyCat = await resolveLegacyCategoryName(resolvedCategoryName, t);
+        if (legacyCat) {
+          validatedSelection = {
+            categoryIds: [legacyCat.id],
+            primaryCategoryId: legacyCat.id,
+            categories: [legacyCat],
+            primaryCategory: legacyCat,
+          };
+          resolvedCategoryName = legacyCat.name;
+        }
+      } else {
+        throw new BadRequestError("At least 1 main category must be selected (categoryIds)");
       }
 
-      ownerId = user.id;
-    }
+      if (targetEmail) {
+        let user = await User.findOne({ where: { email: targetEmail }, transaction: t });
 
-    if (!ownerId) {
-      ownerId = 1;
-    }
+        if (!user) {
+          tempPasswordGenerated = generateSecureTempPassword();
+          const salt = await bcrypt.genSalt(10);
+          const passwordHash = await bcrypt.hash(tempPasswordGenerated, salt);
 
-    const {
-      ownerName: _on,
-      ownerEmail: _oe,
-      ownerPhone: _op,
-      ...rawShopAttributes
-    } = data;
+          user = await User.create(
+            {
+              name: targetName,
+              email: targetEmail,
+              passwordHash,
+              phone: targetPhone,
+              role: "shop_admin",
+              isActive: true,
+            },
+            { transaction: t }
+          );
+          isNewUserCreated = true;
+        } else if (user.role === "customer") {
+          await user.update({ role: "shop_admin" }, { transaction: t });
+        }
 
-    const shop = await Shop.create({
-      ...rawShopAttributes,
-      ownerId,
-      phone: rawShopAttributes.phone || targetPhone,
-      email: rawShopAttributes.email || targetEmail || null,
-      rating: 0,
-      reviewCount: 0,
-      isVerified: false,
-      isOpen: true,
+        ownerId = user.id;
+      }
+
+      if (!ownerId) {
+        ownerId = 1;
+      }
+
+      const {
+        ownerName: _on,
+        ownerEmail: _oe,
+        ownerPhone: _op,
+        categoryIds: _cids,
+        primaryCategoryId: _pcid,
+        ...rawShopAttributes
+      } = data;
+
+      const createdShop = await Shop.create(
+        {
+          ...rawShopAttributes,
+          category: resolvedCategoryName,
+          ownerId,
+          phone: rawShopAttributes.phone || targetPhone,
+          email: rawShopAttributes.email || targetEmail || null,
+          rating: 0,
+          reviewCount: 0,
+          isVerified: false,
+          isOpen: true,
+        },
+        { transaction: t }
+      );
+
+      let syncedCats: ShopCategorySummary[] = [];
+      if (validatedSelection) {
+        syncedCats = await syncShopCategoriesInTransaction(createdShop.id, validatedSelection, t);
+      }
+
+      return { shop: createdShop, assignedCategories: syncedCats };
     });
+
+    const enriched = attachShopCategoriesMeta(shop.toJSON(), assignedCategories);
 
     if (tempPasswordGenerated && targetEmail) {
       // Async dispatch welcome email via Nodemailer
@@ -547,25 +777,36 @@ export class ShopService {
           console.error(`[ShopService] Failed to send merchant welcome email to ${targetEmail}:`, err);
         });
 
-      (shop as any).merchantCredentials = {
+      (enriched as any).merchantCredentials = {
         email: targetEmail,
         tempPassword: tempPasswordGenerated,
         isNewUser: isNewUserCreated,
       };
     }
 
-    return shop;
+    return enriched;
   }
 
-  async update(id: number, data: Partial<CreateShopInput> & { isOpen?: boolean; isVerified?: boolean }): Promise<Shop> {
-    const shop = await Shop.findByPk(id);
-    if (!shop) {
+  async update(
+    id: number,
+    data: Partial<CreateShopInput> & { isOpen?: boolean; isVerified?: boolean }
+  ): Promise<any> {
+    const existingPreCheck = await Shop.findByPk(id);
+    if (!existingPreCheck) {
       throw new NotFoundError(`Shop with id ${id} not found`);
     }
 
-    const updateData = { ...data };
-    const oldLogoClean = shop.logoUrl ? storageService.extractKeyFromUrl(shop.logoUrl) : null;
-    const oldBannerClean = shop.bannerUrl ? storageService.extractKeyFromUrl(shop.bannerUrl) : null;
+    const updateData: Record<string, any> = { ...data };
+    const hasCategoryIdsUpdate = data.categoryIds !== undefined;
+    const hasPrimaryCategoryUpdate = data.primaryCategoryId !== undefined;
+    const hasLegacyCategoryUpdate = !hasCategoryIdsUpdate && !hasPrimaryCategoryUpdate && data.category !== undefined;
+
+    // Strip join-table fields before passing updateData to Shop.update
+    delete updateData.categoryIds;
+    delete updateData.primaryCategoryId;
+
+    const oldLogoClean = existingPreCheck.logoUrl ? storageService.extractKeyFromUrl(existingPreCheck.logoUrl) : null;
+    const oldBannerClean = existingPreCheck.bannerUrl ? storageService.extractKeyFromUrl(existingPreCheck.bannerUrl) : null;
 
     // Promote new logo if uploaded to temporary storage
     if (updateData.logoUrl !== undefined) {
@@ -575,13 +816,13 @@ export class ShopService {
         const cleanLogoKey = storageService.extractKeyFromUrl(updateData.logoUrl);
         if (cleanLogoKey.includes("temp/uploads/") || cleanLogoKey.startsWith("temp/")) {
           try {
-            const permanentLogoKey = `shops/${shop.id}/logo.webp`;
+            const permanentLogoKey = `shops/${existingPreCheck.id}/logo.webp`;
             await uploadService.promoteUpload({
               tempKeyOrId: cleanLogoKey,
               targetPermanentKey: permanentLogoKey,
               entityType: "shop",
-              entityId: shop.id,
-              shopId: shop.id,
+              entityId: existingPreCheck.id,
+              shopId: existingPreCheck.id,
               imageRole: "logo",
             });
             updateData.logoUrl = permanentLogoKey;
@@ -589,7 +830,6 @@ export class ShopService {
             console.error(`Failed to promote shop logo [${cleanLogoKey}]:`, err?.message);
           }
         } else {
-          // Keep clean relative storage key
           updateData.logoUrl = cleanLogoKey;
         }
       }
@@ -603,13 +843,13 @@ export class ShopService {
         const cleanBannerKey = storageService.extractKeyFromUrl(updateData.bannerUrl);
         if (cleanBannerKey.includes("temp/uploads/") || cleanBannerKey.startsWith("temp/")) {
           try {
-            const permanentBannerKey = `shops/${shop.id}/banner.webp`;
+            const permanentBannerKey = `shops/${existingPreCheck.id}/banner.webp`;
             await uploadService.promoteUpload({
               tempKeyOrId: cleanBannerKey,
               targetPermanentKey: permanentBannerKey,
               entityType: "shop",
-              entityId: shop.id,
-              shopId: shop.id,
+              entityId: existingPreCheck.id,
+              shopId: existingPreCheck.id,
               imageRole: "banner",
             });
             updateData.bannerUrl = permanentBannerKey;
@@ -617,13 +857,81 @@ export class ShopService {
             console.error(`Failed to promote shop banner [${cleanBannerKey}]:`, err?.message);
           }
         } else {
-          // Keep clean relative storage key
           updateData.bannerUrl = cleanBannerKey;
         }
       }
     }
 
-    await shop.update(updateData);
+    const { updatedShop, finalCategories } = await sequelize.transaction(async (t) => {
+      // Acquire row-level lock on the shop to serialize concurrent category updates
+      // and prevent race conditions that could bypass the 3-category limit or primary constraint.
+      const shop = await Shop.findByPk(id, { transaction: t, lock: t.LOCK.UPDATE });
+      if (!shop) {
+        throw new NotFoundError(`Shop with id ${id} not found`);
+      }
+
+      let syncedCategories: ShopCategorySummary[] | null = null;
+
+      if (hasCategoryIdsUpdate || hasPrimaryCategoryUpdate) {
+        const currentCategories = await getEffectiveShopL1Categories(shop, t);
+        const currentCategoryIds = currentCategories.map((c) => c.id);
+
+        const targetCategoryIds = hasCategoryIdsUpdate ? data.categoryIds : currentCategoryIds;
+        const targetPrimaryId = hasPrimaryCategoryUpdate
+          ? data.primaryCategoryId
+          : currentCategories.find((c) => c.isPrimary)?.id;
+
+        const selection = await validateShopCategorySelection(
+          targetCategoryIds,
+          // If the old primary was removed and caller didn't explicitly specify a new one, default to first selected
+          targetPrimaryId && Array.isArray(targetCategoryIds) && targetCategoryIds.map(Number).includes(Number(targetPrimaryId))
+            ? targetPrimaryId
+            : undefined,
+          t
+        );
+
+        const nextIdSet = new Set(selection.categoryIds);
+        const removedCategoryIds = currentCategoryIds.filter((cid) => !nextIdSet.has(cid));
+
+        // Block unsafe removal if dependent active products still exist under any removed category
+        await assertSafeCategoryRemoval(shop.id, removedCategoryIds, t);
+
+        syncedCategories = await syncShopCategoriesInTransaction(shop.id, selection, t);
+        // Keep legacy shops.category synchronized with primary category
+        updateData.category = selection.primaryCategory.name;
+      } else if (hasLegacyCategoryUpdate && typeof data.category === "string" && data.category.trim()) {
+        const currentCategories = await getEffectiveShopL1Categories(shop, t);
+        const resolvedLegacy = await resolveLegacyCategoryName(data.category, t);
+        if (resolvedLegacy) {
+          const currentIds = currentCategories.map((c) => c.id);
+          if (currentIds.length <= 1) {
+            const removedIds = currentIds.filter((cid) => cid !== resolvedLegacy.id);
+            await assertSafeCategoryRemoval(shop.id, removedIds, t);
+            syncedCategories = await syncShopCategoriesInTransaction(
+              shop.id,
+              {
+                categoryIds: [resolvedLegacy.id],
+                primaryCategoryId: resolvedLegacy.id,
+                categories: [resolvedLegacy],
+                primaryCategory: resolvedLegacy,
+              },
+              t
+            );
+            updateData.category = resolvedLegacy.name;
+          }
+        }
+      }
+
+      if (Object.keys(updateData).length > 0) {
+        await shop.update(updateData, { transaction: t });
+      }
+
+      if (!syncedCategories) {
+        syncedCategories = await getEffectiveShopL1Categories(shop, t);
+      }
+
+      return { updatedShop: shop, finalCategories: syncedCategories };
+    });
 
     // If logo was explicitly removed or changed to a different key, safely delete old key
     const newLogoClean = updateData.logoUrl ? storageService.extractKeyFromUrl(updateData.logoUrl) : null;
@@ -633,7 +941,7 @@ export class ShopService {
       updateData.logoUrl !== undefined &&
       oldLogoClean !== newLogoClean
     ) {
-      if (oldLogoClean !== `shops/${shop.id}/logo.webp`) {
+      if (oldLogoClean !== `shops/${updatedShop.id}/logo.webp`) {
         storageService.deleteObject(oldLogoClean).catch((delErr) => {
           console.warn(`[Storage Warning] Failed to delete replaced logo [${oldLogoClean}]:`, delErr?.message);
         });
@@ -648,22 +956,120 @@ export class ShopService {
       updateData.bannerUrl !== undefined &&
       oldBannerClean !== newBannerClean
     ) {
-      if (oldBannerClean !== `shops/${shop.id}/banner.webp`) {
+      if (oldBannerClean !== `shops/${updatedShop.id}/banner.webp`) {
         storageService.deleteObject(oldBannerClean).catch((delErr) => {
           console.warn(`[Storage Warning] Failed to delete replaced banner [${oldBannerClean}]:`, delErr?.message);
         });
       }
     }
 
-    return shop;
+    return attachShopCategoriesMeta(updatedShop.toJSON(), finalCategories);
   }
 
-  async delete(id: number): Promise<void> {
-    const shop = await Shop.findByPk(id);
+  /**
+   * Safely soft-deletes a shop and schedules it for permanent purge after 30 days.
+   * Only the shop's owner or a super_admin can trigger this operation.
+   */
+  async softDelete(
+    id: number,
+    user: AuthenticatedUser,
+    reason?: string
+  ): Promise<{ shop: Shop; purgeAfter: Date }> {
+    const shop = await Shop.findByPk(id, { paranoid: false });
     if (!shop) {
       throw new NotFoundError(`Shop with id ${id} not found`);
     }
 
+    if (shop.deletedAt) {
+      throw new BadRequestError("Shop is already scheduled for deletion");
+    }
+
+    // RBAC & Ownership check
+    if (user.role !== "super_admin" && shop.ownerId !== user.id) {
+      throw new ForbiddenError("You do not have permission to delete this shop");
+    }
+
+    const deletionRequestedAt = new Date();
+    const purgeAfter = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000); // 30-day recovery grace period
+
+    // 1. Update status fields and mark storefront closed
+    await shop.update({
+      isOpen: false,
+      deletionRequestedAt,
+      purgeAfter,
+      deletionReason: reason ? reason.trim().slice(0, 500) : "Owner requested shop closure",
+      deletedByUserId: user.id,
+    });
+
+    // 2. Soft-delete the shop record (Sequelize paranoid sets deletedAt)
+    await shop.destroy();
+
+    // 3. Soft-delete associated products so they immediately disappear from catalog and search
+    await Product.destroy({ where: { shopId: id } });
+
+    console.log(
+      `[Shop Deletion Scheduled] Shop ID ${id} ("${shop.name}") soft-deleted by User ${user.id} (${user.role}). Purge date: ${purgeAfter.toISOString()}`
+    );
+
+    return { shop, purgeAfter };
+  }
+
+  /**
+   * Restores a soft-deleted shop within its 30-day recovery grace period.
+   */
+  async restore(id: number, user: AuthenticatedUser): Promise<Shop> {
+    const shop = await Shop.findByPk(id, { paranoid: false });
+    if (!shop) {
+      throw new NotFoundError(`Shop with id ${id} not found`);
+    }
+
+    if (!shop.deletedAt) {
+      throw new BadRequestError("Shop is not currently deleted");
+    }
+
+    // RBAC & Ownership check
+    if (user.role !== "super_admin" && shop.ownerId !== user.id) {
+      throw new ForbiddenError("You do not have permission to restore this shop");
+    }
+
+    // Verify 30-day recovery window has not expired
+    if (shop.purgeAfter && new Date() > new Date(shop.purgeAfter)) {
+      throw new BadRequestError(
+        "The 30-day recovery period has expired. This shop is undergoing permanent purge and cannot be restored."
+      );
+    }
+
+    // 1. Restore shop record
+    await shop.restore();
+
+    // 2. Reset deletion tracking metadata and reopen shop
+    await shop.update({
+      isOpen: true,
+      deletionRequestedAt: null,
+      purgeAfter: null,
+      deletionReason: null,
+      deletedByUserId: null,
+    });
+
+    // 3. Restore all associated products
+    await Product.restore({ where: { shopId: id } });
+
+    console.log(
+      `[Shop Restored] Shop ID ${id} ("${shop.name}") restored by User ${user.id} (${user.role}).`
+    );
+
+    return shop;
+  }
+
+  async delete(id: number, user?: AuthenticatedUser): Promise<void> {
+    if (user) {
+      await this.softDelete(id, user);
+      return;
+    }
+    const shop = await Shop.findByPk(id);
+    if (!shop) {
+      throw new NotFoundError(`Shop with id ${id} not found`);
+    }
     await shop.destroy();
   }
 }

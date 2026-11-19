@@ -13,6 +13,7 @@ import { ShopAnalyticsEvent } from "../modules/analytics/shopAnalyticsEvent.mode
 import { ShopAnalyticsDaily } from "../modules/analytics/shopAnalyticsDaily.model";
 import { ShopAnalyticsUniqueVisitor } from "../modules/analytics/shopAnalyticsUniqueVisitor.model";
 import { ShopSubcategory } from "../modules/categories/shopSubcategory.model";
+import { ShopCategory } from "../modules/shops/shopCategory.model";
 import { setupAssociations } from "./associations";
 
 // Initialize associations
@@ -34,5 +35,6 @@ export {
   ShopAnalyticsDaily,
   ShopAnalyticsUniqueVisitor,
   ShopSubcategory,
+  ShopCategory,
 };
 

@@ -21,8 +21,11 @@
     "migrate:undo:prod": "DOTENV_CONFIG_PATH=.env.production node -r dotenv/config node_modules/.bin/sequelize-cli db:migrate:undo",
     "seed": "tsx src/database/seed.ts",
     "seed:local": "DOTENV_CONFIG_PATH=.env.local tsx -r dotenv/config src/database/seed-local-data.ts",
+    "cleanup:dry-run": "DOTENV_CONFIG_PATH=.env.production tsx -r dotenv/config scripts/run-shop-cleanup.ts --dry-run",
+    "cleanup:dry-run:local": "DOTENV_CONFIG_PATH=.env.local tsx -r dotenv/config scripts/run-shop-cleanup.ts --dry-run",
+    "cleanup:force": "DOTENV_CONFIG_PATH=.env.production tsx -r dotenv/config scripts/run-shop-cleanup.ts --force",
     "start": "node dist/server.js",
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "test": "tsx scripts/test-deletion-security.ts"
   },
   "keywords": [],
   "author": "",

@@ -1,10 +1,12 @@
-import { Op } from "sequelize";
+import { Op, fn, col, literal } from "sequelize";
 import { sequelize } from "../../config/database";
 import { Category } from "./category.model";
 import { ShopSubcategory } from "./shopSubcategory.model";
 import { Shop } from "../shops/shop.model";
+import { Product } from "../products/product.model";
 import { DEFAULT_PRIMARY_CATEGORIES } from "./category.defaults";
-import { NotFoundError, BadRequestError } from "../../core/errors/AppError";
+import { NotFoundError, BadRequestError, ConflictError } from "../../core/errors/AppError";
+import { getEffectiveShopL1Categories } from "../shops/shopCategory.helper";
 
 export interface CreateCategoryInput {
   name: string;
@@ -443,44 +445,56 @@ export class CategoryService {
   }
 
   /**
-   * Get Shop-Specific Subcategories
-   * Scoped strictly to the shop's assigned primary category (level 1 sector).
-   * Merges global active subcategories of that sector with shop-specific ordering & visibility.
+   * Get Shop-Specific Subcategories across ALL of the shop's selected L1 main categories (1..3).
+   * - Single batched query for L2 subcategories, shop_subcategories settings, and per-subcategory product counts (zero N+1).
+   * - Preserves existing shop visibility and sortOrder.
+   * - Unconfigured subcategories (e.g. new shops or newly added global subcategories) default to
+   *   isVisible = false so they are selectable in Shop Admin without unexpectedly appearing on storefronts.
+   * - Supports `onlyWithProducts` and `onlyVisible` for customer storefront navigation.
    */
-  async getShopSubcategories(shopId: number, parentId?: number) {
+  async getShopSubcategories(
+    shopId: number,
+    options: { parentId?: number; onlyWithProducts?: boolean; onlyVisible?: boolean } | number = {}
+  ) {
+    const opts = typeof options === "number" ? { parentId: options } : options || {};
     const shop = await Shop.findByPk(shopId);
     if (!shop) {
       throw new NotFoundError(`Shop with ID ${shopId} not found`);
     }
 
-    let targetParentId = parentId;
-    if (!targetParentId && shop.category) {
-      const cleanCategory = shop.category.trim();
-      const parentCat = await Category.findOne({
-        where: {
-          level: 1,
-          [Op.or]: [
-            { name: { [Op.iLike]: cleanCategory } },
-            { slug: { [Op.iLike]: slugify(cleanCategory) } },
-          ],
-        },
-      });
-      if (parentCat) {
-        targetParentId = parentCat.id;
+    // 1. Read the shop's selected L1 main categories (with legacy transition fallback)
+    const shopL1Categories = await getEffectiveShopL1Categories(shop);
+    const parentRankMap = new Map<number, number>();
+    const parentPrimaryMap = new Map<number, boolean>();
+    shopL1Categories.forEach((c, idx) => {
+      parentRankMap.set(c.id, idx);
+      parentPrimaryMap.set(c.id, c.isPrimary);
+    });
+
+    let targetParentIds = shopL1Categories.map((c) => c.id);
+
+    if (opts.parentId !== undefined && !isNaN(Number(opts.parentId))) {
+      const requestedParentId = Number(opts.parentId);
+      if (targetParentIds.length === 0 || targetParentIds.includes(requestedParentId)) {
+        targetParentIds = [requestedParentId];
+      } else {
+        // Requested parent category is not assigned to this shop
+        return [];
       }
     }
 
-    const categoryWhere: any = {
-      level: 2,
-      isActive: true,
-    };
-    if (targetParentId) {
-      categoryWhere.parentId = targetParentId;
+    if (targetParentIds.length === 0) {
+      return [];
     }
 
-    const [allSubcategories, shopConfigs] = await Promise.all([
+    // 2. Single parallel batch: L2 subcategories + shop_subcategories + aggregated product counts
+    const [allSubcategories, shopConfigs, productCountsRaw, legacyNameCountsRaw] = await Promise.all([
       Category.findAll({
-        where: categoryWhere,
+        where: {
+          level: 2,
+          isActive: true,
+          parentId: { [Op.in]: targetParentIds },
+        },
         include: [
           {
             model: Category,
@@ -492,11 +506,45 @@ export class CategoryService {
         order: [
           ["orderIndex", "ASC"],
           ["name", "ASC"],
+          ["id", "ASC"],
         ],
       }),
       ShopSubcategory.findAll({
         where: { shopId },
       }),
+      Product.findAll({
+        where: {
+          shopId,
+          categoryId: { [Op.ne]: null },
+        },
+        attributes: [
+          "categoryId",
+          [fn("COUNT", col("id")), "totalCount"],
+          [
+            fn("SUM", literal('CASE WHEN "isAvailable" = true THEN 1 ELSE 0 END')),
+            "activeCount",
+          ],
+        ],
+        group: ["categoryId"],
+        raw: true,
+      }) as unknown as Promise<Array<{ categoryId: number; totalCount: string | number; activeCount: string | number }>>,
+      // Catch any legacy products whose categoryId is NULL
+      Product.findAll({
+        where: {
+          shopId,
+          categoryId: null,
+        },
+        attributes: [
+          "category",
+          [fn("COUNT", col("id")), "totalCount"],
+          [
+            fn("SUM", literal('CASE WHEN "isAvailable" = true THEN 1 ELSE 0 END')),
+            "activeCount",
+          ],
+        ],
+        group: ["category"],
+        raw: true,
+      }) as unknown as Promise<Array<{ category: string; totalCount: string | number; activeCount: string | number }>>,
     ]);
 
     const configMap = new Map<number, ShopSubcategory>();
@@ -508,14 +556,45 @@ export class CategoryService {
       }
     });
 
-    // Merge global subcategories with shop custom order & visibility
+    const countByCatId = new Map<number, { total: number; active: number }>();
+    for (const row of productCountsRaw) {
+      countByCatId.set(Number(row.categoryId), {
+        total: Number(row.totalCount || 0),
+        active: Number(row.activeCount || 0),
+      });
+    }
+
+    const legacyCountByName = new Map<string, { total: number; active: number }>();
+    for (const row of legacyNameCountsRaw) {
+      if (row.category) {
+        legacyCountByName.set(row.category.trim().toLowerCase(), {
+          total: Number(row.totalCount || 0),
+          active: Number(row.activeCount || 0),
+        });
+      }
+    }
+
+    const hasAnyShopConfig = shopConfigs.length > 0;
+
+    // 3. Merge global L2 subcategories with shop-specific visibility, order & product counts
     const merged = allSubcategories.map((subcat) => {
       const cfg = configMap.get(subcat.id);
-      // If shop has custom configs, place unconfigured new subcategories after them
-      const defaultSort =
-        shopConfigs.length > 0
-          ? maxShopSortOrder + 1 + (subcat.orderIndex || 0)
-          : (subcat.orderIndex || 0);
+      const idCounts = countByCatId.get(subcat.id) || { total: 0, active: 0 };
+      const nameCounts = legacyCountByName.get(subcat.name.trim().toLowerCase()) || { total: 0, active: 0 };
+      const productCount = idCounts.total + nameCounts.total;
+      const activeProductCount = idCounts.active + nameCounts.active;
+
+      const parentRank = subcat.parentId !== null ? (parentRankMap.get(subcat.parentId) ?? 99) : 99;
+      const defaultSort = hasAnyShopConfig
+        ? maxShopSortOrder + 1 + parentRank * 1000 + (subcat.orderIndex || 0)
+        : parentRank * 1000 + (subcat.orderIndex || 0);
+
+      // New shops & newly added global subcategories are selectable (isVisible: false) until explicitly enabled.
+      // Pre-migration safety: if a legacy shop has ZERO shop_subcategories rows yet AND already has active products
+      // in this subcategory, treat it as visible so existing live storefronts never go blank before backfill runs.
+      const isVisible = cfg
+        ? Boolean(cfg.isVisible)
+        : !hasAnyShopConfig && activeProductCount > 0;
 
       return {
         id: subcat.id,
@@ -525,30 +604,106 @@ export class CategoryService {
         parentId: subcat.parentId,
         parentName: subcat.parent?.name || "General",
         parentEmoji: subcat.parent?.emoji || "🛒",
+        parentIsPrimary: subcat.parentId !== null ? Boolean(parentPrimaryMap.get(subcat.parentId)) : false,
         emoji: subcat.emoji,
         icon: subcat.icon,
         imageUrl: subcat.imageUrl,
         globalOrderIndex: subcat.orderIndex,
         sortOrder: cfg ? cfg.sortOrder : defaultSort,
-        isVisible: cfg ? cfg.isVisible : true,
+        isVisible,
         isCustomized: Boolean(cfg),
+        productCount,
+        activeProductCount,
       };
     });
 
-    // Sort by shop's custom sortOrder ASC, then fallback to name ASC
-    return merged.sort((a, b) => {
+    // 4. Deterministic sorting: custom sortOrder ASC, parent rank ASC, global order ASC, name ASC, id ASC
+    const sorted = merged.sort((a, b) => {
       if (a.sortOrder !== b.sortOrder) return a.sortOrder - b.sortOrder;
-      return a.name.localeCompare(b.name);
+      const rankA = a.parentId !== null ? (parentRankMap.get(a.parentId) ?? 99) : 99;
+      const rankB = b.parentId !== null ? (parentRankMap.get(b.parentId) ?? 99) : 99;
+      if (rankA !== rankB) return rankA - rankB;
+      if (a.globalOrderIndex !== b.globalOrderIndex) return a.globalOrderIndex - b.globalOrderIndex;
+      const nameCmp = a.name.localeCompare(b.name);
+      if (nameCmp !== 0) return nameCmp;
+      return a.id - b.id;
     });
+
+    if (opts.onlyWithProducts) {
+      return sorted.filter((s) => s.isVisible && s.activeProductCount > 0);
+    }
+
+    if (opts.onlyVisible) {
+      return sorted.filter((s) => s.isVisible);
+    }
+
+    return sorted;
+  }
+
+  /**
+   * Helper to check active dependent products before disabling a subcategory for a shop.
+   */
+  private async assertSafeSubcategoryDeactivation(
+    shopId: number,
+    subcat: Category
+  ): Promise<void> {
+    const activeProductCount = await Product.count({
+      where: {
+        shopId,
+        isAvailable: true,
+        [Op.or]: [
+          { categoryId: subcat.id },
+          {
+            categoryId: null,
+            category: { [Op.iLike]: subcat.name.trim() },
+          },
+        ],
+      },
+    });
+
+    if (activeProductCount > 0) {
+      throw new ConflictError(
+        `Cannot disable subcategory "${subcat.name}" because ${activeProductCount} active product${activeProductCount === 1 ? "" : "s"} belong to it. Please reassign or deactivate those products first.`,
+        {
+          code: "SUBCATEGORY_HAS_DEPENDENT_PRODUCTS",
+          subcategoryId: subcat.id,
+          subcategoryName: subcat.name,
+          productCount: activeProductCount,
+        }
+      );
+    }
   }
 
   /**
    * Update Shop Subcategory Visibility (enable/disable for shop)
    */
   async updateShopSubcategoryVisibility(shopId: number, subcategoryId: number, isVisible: boolean) {
+    const shop = await Shop.findByPk(shopId);
+    if (!shop) {
+      throw new NotFoundError(`Shop with ID ${shopId} not found`);
+    }
+
     const subcat = await Category.findOne({ where: { id: subcategoryId, level: 2 } });
     if (!subcat) {
       throw new NotFoundError(`Subcategory with ID ${subcategoryId} not found`);
+    }
+
+    if (isVisible && !subcat.isActive) {
+      throw new BadRequestError(`Subcategory "${subcat.name}" is globally inactive and cannot be enabled`);
+    }
+
+    // Enforce that the subcategory belongs to one of the shop's selected L1 main categories
+    const shopCategories = await getEffectiveShopL1Categories(shop);
+    const allowedParentIds = new Set(shopCategories.map((c) => c.id));
+    if (allowedParentIds.size > 0 && (!subcat.parentId || !allowedParentIds.has(subcat.parentId))) {
+      throw new BadRequestError(
+        `Subcategory "${subcat.name}" does not belong to any of your shop's selected main categories.`
+      );
+    }
+
+    // Safety check: block disabling a subcategory that still has active products
+    if (!isVisible) {
+      await this.assertSafeSubcategoryDeactivation(shopId, subcat);
     }
 
     const existing = await ShopSubcategory.findOne({
@@ -560,10 +715,18 @@ export class CategoryService {
       return existing;
     }
 
+    // Place newly enabled subcategory at the end of existing custom order without overwriting previous order
+    const maxSortRow = await ShopSubcategory.findOne({
+      where: { shopId },
+      order: [["sortOrder", "DESC"]],
+      attributes: ["sortOrder"],
+    });
+    const nextSortOrder = maxSortRow ? maxSortRow.sortOrder + 1 : subcat.orderIndex;
+
     return ShopSubcategory.create({
       shopId,
       subcategoryId,
-      sortOrder: subcat.orderIndex,
+      sortOrder: nextSortOrder,
       isVisible,
     });
   }
@@ -577,6 +740,11 @@ export class CategoryService {
   ) {
     if (!Array.isArray(items) || items.length === 0) {
       throw new BadRequestError("Items array must be provided with at least one element");
+    }
+
+    const shop = await Shop.findByPk(shopId);
+    if (!shop) {
+      throw new NotFoundError(`Shop with ID ${shopId} not found`);
     }
 
     const idSet = new Set<number>();
@@ -597,11 +765,34 @@ export class CategoryService {
         id: Array.from(idSet),
         level: 2,
       },
-      attributes: ["id"],
+      attributes: ["id", "name", "parentId", "isActive"],
     });
 
     if (validSubcats.length !== idSet.size) {
       throw new BadRequestError("One or more subcategory IDs are invalid or not L2 subcategories");
+    }
+
+    const shopCategories = await getEffectiveShopL1Categories(shop);
+    const allowedParentIds = new Set(shopCategories.map((c) => c.id));
+    const subcatMap = new Map<number, Category>();
+
+    for (const sc of validSubcats) {
+      subcatMap.set(sc.id, sc);
+      if (allowedParentIds.size > 0 && (!sc.parentId || !allowedParentIds.has(sc.parentId))) {
+        throw new BadRequestError(
+          `Subcategory "${sc.name}" does not belong to any of this shop's selected main categories.`
+        );
+      }
+    }
+
+    // Check safe deactivation for any item explicitly disabling visibility
+    for (const item of items) {
+      if (item.isVisible === false) {
+        const sc = subcatMap.get(item.subcategoryId);
+        if (sc) {
+          await this.assertSafeSubcategoryDeactivation(shopId, sc);
+        }
+      }
     }
 
     await sequelize.transaction(async (t) => {
@@ -612,7 +803,12 @@ export class CategoryService {
         });
 
         const sortOrder = Math.max(0, Math.floor(item.sortOrder));
-        const isVisible = item.isVisible !== undefined ? item.isVisible : existing ? existing.isVisible : true;
+        const isVisible =
+          item.isVisible !== undefined
+            ? item.isVisible
+            : existing
+              ? existing.isVisible
+              : false;
 
         if (existing) {
           await existing.update({ sortOrder, isVisible }, { transaction: t });
@@ -635,11 +831,30 @@ export class CategoryService {
 
   /**
    * Reset Shop-Specific Subcategories Order to Global Default
+   * Preserves enabled/disabled visibility so active products are never orphaned or hidden!
    */
   async resetShopSubcategories(shopId: number) {
-    await ShopSubcategory.destroy({
+    const existingRows = await ShopSubcategory.findAll({
       where: { shopId },
+      include: [
+        {
+          model: Category,
+          as: "subcategory",
+          attributes: ["id", "orderIndex"],
+          required: false,
+        },
+      ],
     });
+
+    await sequelize.transaction(async (t) => {
+      for (const row of existingRows) {
+        await row.update(
+          { sortOrder: row.subcategory?.orderIndex ?? 0 },
+          { transaction: t }
+        );
+      }
+    });
+
     return this.getShopSubcategories(shopId);
   }
 }

@@ -2,20 +2,29 @@ import { Op, literal } from "sequelize";
 import { sequelize } from "../../config/database";
 import { Product } from "./product.model";
 import { Shop } from "../shops/shop.model";
+import { ShopCategory } from "../shops/shopCategory.model";
 import { Category } from "../categories/category.model";
+import { ShopSubcategory } from "../categories/shopSubcategory.model";
 import { NotFoundError, BadRequestError } from "../../core/errors/AppError";
 import { storageService } from "../../core/storage/storage.service";
 import { uploadService } from "../upload/upload.service";
 import { ImageDeletionJob } from "../upload/imageDeletionJob.model";
+import { getEffectiveShopL1Categories, slugifyCategoryName } from "../shops/shopCategory.helper";
+import {
+  EFFECTIVE_SELLING_PRICE_SQL,
+  normalizeAndValidateProductPricing,
+} from "./pricing.helper";
 
 export interface ListProductsQuery {
   shopId?: number;
   category?: string;
   categoryId?: number;
+  subcategoryId?: number;
   search?: string;
   minPrice?: number;
   maxPrice?: number;
   isAvailable?: boolean;
+  allowSuspended?: boolean;
   page?: number;
   limit?: number;
   lat?: number;
@@ -40,33 +49,183 @@ export interface CreateProductInput {
 }
 
 export class ProductService {
+  /**
+   * Authoritative server-side subcategory validation for Product create & update:
+   * - One product belongs to exactly one active L2 subcategory (`categoryId`).
+   * - Its parent L1 category must be one of the shop's selected main categories.
+   * - The subcategory must be enabled (`isVisible = true`) for this shop when creating
+   *   or moving a product to a new subcategory.
+   * - Derives the `category` string strictly from the database Category row (never trusts client string).
+   */
+  private async validateProductSubcategoryForShop(
+    shop: Shop,
+    rawCategoryId: number | null | undefined,
+    rawLegacyCategoryName: string | undefined,
+    requireEnabledForShop: boolean
+  ): Promise<{ categoryId: number; categoryName: string }> {
+    const shopL1Categories = await getEffectiveShopL1Categories(shop);
+    const allowedParentIds = shopL1Categories.map((c) => c.id);
+
+    let resolvedCategory: Category | null = null;
+
+    if (rawCategoryId !== undefined && rawCategoryId !== null && !isNaN(Number(rawCategoryId))) {
+      const catId = Number(rawCategoryId);
+      resolvedCategory = await Category.findByPk(catId);
+      if (!resolvedCategory) {
+        throw new BadRequestError(`Subcategory with ID ${catId} does not exist`);
+      }
+    } else if (rawLegacyCategoryName && rawLegacyCategoryName.trim()) {
+      // Transition fallback if a legacy caller omits categoryId: resolve strictly within shop's L1 categories
+      const cleanName = rawLegacyCategoryName.trim();
+      const whereSub: any = {
+        level: 2,
+        isActive: true,
+        name: { [Op.iLike]: cleanName },
+      };
+      if (allowedParentIds.length > 0) {
+        whereSub.parentId = { [Op.in]: allowedParentIds };
+      }
+      const matches = await Category.findAll({ where: whereSub });
+      if (matches.length === 1) {
+        resolvedCategory = matches[0];
+      } else if (matches.length > 1) {
+        throw new BadRequestError(
+          `Subcategory name "${cleanName}" is ambiguous across multiple categories. Please pass an explicit categoryId.`
+        );
+      } else {
+        throw new BadRequestError(
+          `Subcategory "${cleanName}" does not match any active subcategory under your shop's selected categories.`
+        );
+      }
+    } else {
+      throw new BadRequestError("A valid subcategory (categoryId) is required for every product");
+    }
+
+    if (!resolvedCategory.isActive) {
+      throw new BadRequestError(
+        `Subcategory "${resolvedCategory.name}" is inactive and cannot be assigned to products`
+      );
+    }
+
+    if (resolvedCategory.level !== 2 || !resolvedCategory.parentId) {
+      throw new BadRequestError(
+        `Category "${resolvedCategory.name}" is a main category. Products must belong to a specific L2 subcategory.`
+      );
+    }
+
+    if (allowedParentIds.length > 0 && !allowedParentIds.includes(resolvedCategory.parentId)) {
+      const allowedNames = shopL1Categories.map((c) => c.name).join(", ");
+      throw new BadRequestError(
+        `Subcategory "${resolvedCategory.name}" does not belong to your store's selected main categories (${allowedNames}).`
+      );
+    }
+
+    if (requireEnabledForShop) {
+      const [shopSubCfg, anyShopSubConfigCount, hasNormalizedShopCategories] = await Promise.all([
+        ShopSubcategory.findOne({
+          where: { shopId: shop.id, subcategoryId: resolvedCategory.id },
+        }),
+        ShopSubcategory.count({ where: { shopId: shop.id } }),
+        ShopCategory.count({ where: { shopId: shop.id } }).catch(() => 0),
+      ]);
+
+      const isExplicitlyDisabled = shopSubCfg ? !shopSubCfg.isVisible : false;
+      const isUnconfiguredWhenRequired =
+        !shopSubCfg && (anyShopSubConfigCount > 0 || hasNormalizedShopCategories > 0);
+
+      if (isExplicitlyDisabled || isUnconfiguredWhenRequired) {
+        throw new BadRequestError(
+          `Subcategory "${resolvedCategory.name}" is currently disabled for your shop. Enable it in Categories before adding products to it.`
+        );
+      }
+    }
+
+    return {
+      categoryId: resolvedCategory.id,
+      categoryName: resolvedCategory.name,
+    };
+  }
+
   async findAll(query: ListProductsQuery = {}) {
-    const page = Math.max(1, Number(query.page || 1));
-    const limit = Math.min(50, Math.max(1, Number(query.limit || 20)));
+    const page = Math.max(1, Math.floor(Number(query.page || 1)));
+    const defaultLimit = query.shopId ? 12 : 20;
+    const limit = Math.min(50, Math.max(1, Math.floor(Number(query.limit || defaultLimit))));
     const offset = (page - 1) * limit;
 
     const where: Record<string, unknown> = {};
+    const andConditions: any[] = [];
 
     if (query.shopId) {
       where.shopId = Number(query.shopId);
     }
 
-    if (query.categoryId) {
-      const catId = Number(query.categoryId);
+    const effectiveCatId = query.subcategoryId ?? query.categoryId;
+
+    if (effectiveCatId !== undefined && !isNaN(Number(effectiveCatId)) && Number(effectiveCatId) > 0) {
+      const catId = Number(effectiveCatId);
       const targetCat = await Category.findByPk(catId);
       if (targetCat && targetCat.level === 1) {
-        // If it's an L1 department, include all child categories
+        // If it's an L1 department, include all active child subcategories
         const children = await Category.findAll({
           where: { parentId: catId },
-          attributes: ["id"],
+          attributes: ["id", "name"],
         });
         const allIds = [catId, ...children.map((c) => c.id)];
-        where.categoryId = { [Op.in]: allIds };
+        const childNames = children.map((c) => c.name);
+        andConditions.push({
+          [Op.or]: [
+            { categoryId: { [Op.in]: allIds } },
+            ...(childNames.length > 0 ? [{ categoryId: null, category: { [Op.in]: childNames } }] : []),
+          ],
+        });
+      } else if (targetCat) {
+        andConditions.push({
+          [Op.or]: [
+            { categoryId: catId },
+            { categoryId: null, category: { [Op.iLike]: targetCat.name.trim() } },
+          ],
+        });
       } else {
         where.categoryId = catId;
       }
-    } else if (query.category) {
-      where.category = query.category;
+    } else if (query.category && query.category.trim() && query.category.trim().toLowerCase() !== "all") {
+      const cleanCat = query.category.trim();
+      const slugCat = slugifyCategoryName(cleanCat);
+      const matchedCat = await Category.findOne({
+        where: {
+          [Op.or]: [
+            { name: { [Op.iLike]: cleanCat } },
+            { slug: { [Op.iLike]: slugCat } },
+          ],
+        },
+        attributes: ["id", "name", "level"],
+      });
+
+      if (matchedCat && matchedCat.level === 1) {
+        // Expanding L1 main category name to all its L2 subcategories so customer search
+        // finds products across all selected categories!
+        const children = await Category.findAll({
+          where: { parentId: matchedCat.id },
+          attributes: ["id", "name"],
+        });
+        const allIds = [matchedCat.id, ...children.map((c) => c.id)];
+        const childNames = [matchedCat.name, ...children.map((c) => c.name)];
+        andConditions.push({
+          [Op.or]: [
+            { categoryId: { [Op.in]: allIds } },
+            { category: { [Op.in]: childNames } },
+          ],
+        });
+      } else if (matchedCat && matchedCat.level === 2) {
+        andConditions.push({
+          [Op.or]: [
+            { categoryId: matchedCat.id },
+            { category: { [Op.iLike]: matchedCat.name } },
+          ],
+        });
+      } else {
+        where.category = { [Op.iLike]: cleanCat };
+      }
     }
 
     if (query.isAvailable !== undefined) {
@@ -74,26 +233,42 @@ export class ProductService {
     }
 
     if (query.minPrice !== undefined || query.maxPrice !== undefined) {
-      const priceFilter: Record<string, unknown> = {};
-      if (query.minPrice !== undefined) priceFilter[Op.gte as unknown as string] = Number(query.minPrice);
-      if (query.maxPrice !== undefined) priceFilter[Op.lte as unknown as string] = Number(query.maxPrice);
-      where.price = priceFilter;
+      if (query.minPrice !== undefined && query.minPrice !== ("" as unknown as number)) {
+        const minVal = Number(query.minPrice);
+        if (Number.isFinite(minVal) && minVal >= 0) {
+          andConditions.push(literal(`(${EFFECTIVE_SELLING_PRICE_SQL}) >= ${minVal}`));
+        }
+      }
+      if (query.maxPrice !== undefined && query.maxPrice !== ("" as unknown as number)) {
+        const maxVal = Number(query.maxPrice);
+        if (Number.isFinite(maxVal) && maxVal >= 0) {
+          andConditions.push(literal(`(${EFFECTIVE_SELLING_PRICE_SQL}) <= ${maxVal}`));
+        }
+      }
     }
 
     if (query.search && query.search.trim()) {
       const s = `%${query.search.trim()}%`;
-      where[Op.or as unknown as string] = [
-        { name: { [Op.iLike]: s } },
-        { description: { [Op.iLike]: s } },
-        { category: { [Op.iLike]: s } },
-      ];
+      andConditions.push({
+        [Op.or]: [
+          { name: { [Op.iLike]: s } },
+          { description: { [Op.iLike]: s } },
+          { category: { [Op.iLike]: s } },
+        ],
+      });
+    }
+
+    if (andConditions.length > 0) {
+      where[Op.and as unknown as string] = andConditions;
     }
 
     const shopWhere: Record<string, unknown> = {};
-    if (!query.shopId) {
+    if (!query.shopId || !query.allowSuspended) {
       // Public consumer queries: Exclude products from suspended or unverified stores
-      shopWhere.isOpen = true;
-      shopWhere.isVerified = true;
+      if (!query.shopId) {
+        shopWhere.isOpen = true;
+        shopWhere.isVerified = true;
+      }
     }
 
     const shopInclude: any = {
@@ -169,24 +344,27 @@ export class ProductService {
       required: false,
     };
 
+    // Deterministic ordering with id ASC tie-breaker so pagination never duplicates or skips items
     let order: any = [
       ["sortOrder", "ASC"],
       ["createdAt", "DESC"],
+      ["id", "ASC"],
     ];
 
     const sortOption = (query.sortBy || "").toLowerCase().trim();
     if (sortOption === "price_asc" || sortOption === "price-asc") {
-      order = [["price", "ASC"], ["createdAt", "DESC"]];
+      order = [[literal(`(${EFFECTIVE_SELLING_PRICE_SQL})`), "ASC"], ["createdAt", "DESC"], ["id", "ASC"]];
     } else if (sortOption === "price_desc" || sortOption === "price-desc") {
-      order = [["price", "DESC"], ["createdAt", "DESC"]];
+      order = [[literal(`(${EFFECTIVE_SELLING_PRICE_SQL})`), "DESC"], ["createdAt", "DESC"], ["id", "ASC"]];
     } else if (sortOption === "newest") {
-      order = [["createdAt", "DESC"]];
-    } else if (hasLocation) {
-      // Proximity-first ranking: when user location is provided, surface items from nearest shops
+      order = [["createdAt", "DESC"], ["id", "ASC"]];
+    } else if (hasLocation && !query.shopId) {
+      // Proximity-first ranking: when user location is provided for marketplace discovery
       order = [
         [distanceLiteral, "ASC"],
         ["sortOrder", "ASC"],
         ["createdAt", "DESC"],
+        ["id", "ASC"],
       ];
     }
 
@@ -350,52 +528,35 @@ export class ProductService {
       throw new BadRequestError("A product can have a maximum of 3 images");
     }
 
+    const validatedPricing = normalizeAndValidateProductPricing({
+      price: data.price,
+      discountPrice: data.discountPrice,
+    });
+
     const shop = await Shop.findByPk(data.shopId);
     if (!shop) {
       throw new NotFoundError(`Shop with ID ${data.shopId} not found`);
     }
 
-    let categoryName = data.category;
-    let categoryId = data.categoryId ?? null;
-
-    if (categoryId && !categoryName) {
-      const cat = await Category.findByPk(categoryId);
-      if (cat) categoryName = cat.name;
-    } else if (categoryName && !categoryId) {
-      const cat = await Category.findOne({
-        where: { name: { [Op.iLike]: categoryName.trim() } },
-      });
-      if (cat) categoryId = cat.id;
-    }
-
-    // Enforce that the product category belongs to the shop's assigned category
-    if (shop.category && categoryId) {
-      const cleanShopCat = shop.category.trim();
-      const parentCat = await Category.findOne({
-        where: {
-          level: 1,
-          [Op.or]: [
-            { name: { [Op.iLike]: cleanShopCat } },
-            { slug: { [Op.iLike]: cleanShopCat.toLowerCase().replace(/[^a-z0-9]+/g, "-") } },
-          ],
-        },
-      });
-
-      if (parentCat) {
-        const cat = await Category.findByPk(categoryId);
-        if (cat && cat.parentId && cat.parentId !== parentCat.id) {
-          throw new BadRequestError(
-            `Product category "${cat.name}" does not belong to your store's assigned category ("${shop.category}"). Products must belong to your store's subcategories.`
-          );
-        }
-      }
-    }
+    // Authoritative server-side subcategory validation:
+    // - Must be an active L2 subcategory
+    // - Parent must be one of the shop's selected L1 main categories
+    // - Subcategory must be enabled for this shop
+    // - Derives category name strictly from DB (never trusts client string)
+    const validatedSub = await this.validateProductSubcategoryForShop(
+      shop,
+      data.categoryId,
+      data.category,
+      true
+    );
+    const categoryId = validatedSub.categoryId;
+    const categoryName = validatedSub.categoryName;
 
     // Default position at end of subcategory product sequence
     const maxSortProduct = await Product.findOne({
       where: {
         shopId: data.shopId,
-        ...(categoryId ? { categoryId } : {}),
+        categoryId,
       },
       order: [["sortOrder", "DESC"]],
       attributes: ["sortOrder"],
@@ -404,7 +565,9 @@ export class ProductService {
 
     const product = await Product.create({
       ...data,
-      category: categoryName || "General",
+      price: validatedPricing.price!,
+      discountPrice: validatedPricing.discountPrice ?? null,
+      category: categoryName,
       categoryId,
       sortOrder: defaultSortOrder,
       stockQuantity: data.stockQuantity ?? 0,
@@ -476,43 +639,58 @@ export class ProductService {
     // Prevent regular product updates from resetting or corrupting sortOrder
     delete (updateData as any).sortOrder;
 
-    if (updateData.categoryId && !updateData.category) {
-      const cat = await Category.findByPk(updateData.categoryId);
-      if (cat) updateData.category = cat.name;
-    } else if (updateData.category && !updateData.categoryId) {
-      const cat = await Category.findOne({
-        where: { name: { [Op.iLike]: updateData.category.trim() } },
-      });
-      if (cat) updateData.categoryId = cat.id;
-    }
-
-    // Enforce that updated product category belongs to the shop's assigned category
-    if (updateData.categoryId) {
-      const shop = await Shop.findByPk(product.shopId);
-      if (shop && shop.category) {
-        const cleanShopCat = shop.category.trim();
-        const parentCat = await Category.findOne({
-          where: {
-            level: 1,
-            [Op.or]: [
-              { name: { [Op.iLike]: cleanShopCat } },
-              { slug: { [Op.iLike]: cleanShopCat.toLowerCase().replace(/[^a-z0-9]+/g, "-") } },
-            ],
-          },
-        });
-
-        if (parentCat) {
-          const cat = await Category.findByPk(updateData.categoryId);
-          if (cat && cat.parentId && cat.parentId !== parentCat.id) {
-            throw new BadRequestError(
-              `Product category "${cat.name}" does not belong to your store's assigned category ("${shop.category}").`
-            );
-          }
+    if (updateData.price !== undefined || updateData.discountPrice !== undefined) {
+      const validatedPricing = normalizeAndValidateProductPricing(
+        {
+          price: updateData.price,
+          discountPrice: updateData.discountPrice,
+        },
+        {
+          price: Number(product.price),
+          discountPrice:
+            product.discountPrice !== null && product.discountPrice !== undefined
+              ? Number(product.discountPrice)
+              : null,
         }
+      );
+      if (validatedPricing.price !== undefined) {
+        updateData.price = validatedPricing.price;
+      }
+      if (validatedPricing.discountPrice !== undefined) {
+        updateData.discountPrice = validatedPricing.discountPrice;
       }
     }
 
-    // If subcategory actually changed, place product at the end of the new subcategory sequence
+    const isCategoryUpdateRequested =
+      updateData.categoryId !== undefined || updateData.category !== undefined;
+
+    if (isCategoryUpdateRequested) {
+      const shop = await Shop.findByPk(product.shopId);
+      if (!shop) {
+        throw new NotFoundError(`Shop with ID ${product.shopId} not found`);
+      }
+
+      const incomingCategoryId = updateData.categoryId;
+      const isChangingCategory =
+        incomingCategoryId !== undefined
+          ? Number(incomingCategoryId) !== product.categoryId
+          : Boolean(
+              updateData.category &&
+                updateData.category.trim().toLowerCase() !== (product.category || "").trim().toLowerCase()
+            );
+
+      const validatedSub = await this.validateProductSubcategoryForShop(
+        shop,
+        incomingCategoryId !== undefined ? incomingCategoryId : product.categoryId,
+        incomingCategoryId !== undefined ? undefined : updateData.category,
+        isChangingCategory
+      );
+
+      updateData.categoryId = validatedSub.categoryId;
+      updateData.category = validatedSub.categoryName;
+    }
+
+    // If subcategory actually changed, place product at the end of the destination subcategory sequence
     if (updateData.categoryId && updateData.categoryId !== product.categoryId) {
       const maxSortProduct = await Product.findOne({
         where: { shopId: product.shopId, categoryId: updateData.categoryId },
