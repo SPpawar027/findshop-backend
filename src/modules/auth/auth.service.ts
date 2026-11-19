@@ -295,9 +295,7 @@ export class AuthService {
   }
 
   async getCurrentUser(userId: number) {
-    const user = await User.findByPk(userId, {
-      attributes: { exclude: ["passwordHash"] },
-    });
+    const user = await User.findByPk(userId);
     if (!user) {
       throw new NotFoundError("User not found");
     }
@@ -317,8 +315,18 @@ export class AuthService {
       }
     }
 
+    const {
+      passwordHash: _ph,
+      passwordResetOtp: _pro,
+      passwordResetOtpExpires: _proe,
+      emailVerificationOtp: _evo,
+      emailVerificationOtpExpires: _evoe,
+      ...safeUserData
+    } = user.toJSON() as Record<string, unknown>;
+
     return {
-      ...user.toJSON(),
+      ...safeUserData,
+      hasPassword: Boolean(user.passwordHash),
       shopId: shopData?.id ?? null,
       shop: shopData,
     };
@@ -815,6 +823,48 @@ export class AuthService {
         createdAt: user.createdAt,
       },
       ...tokens,
+    };
+  }
+
+  /**
+   * Changes password for an authenticated user with an existing password.
+   */
+  async changePassword(userId: number, currentPassword: string, newPassword: string) {
+    if (!currentPassword) {
+      throw new BadRequestError("Current password is required");
+    }
+    if (!newPassword || newPassword.length < 8) {
+      throw new BadRequestError("New password must be at least 8 characters long");
+    }
+    if (!/^(?=.*[a-zA-Z])(?=.*\d)/.test(newPassword)) {
+      throw new BadRequestError("New password must contain at least one letter and one number");
+    }
+    if (currentPassword === newPassword) {
+      throw new BadRequestError("New password must be different from current password");
+    }
+
+    const user = await User.findByPk(userId);
+    if (!user) {
+      throw new NotFoundError("User not found");
+    }
+
+    if (!user.passwordHash) {
+      throw new BadRequestError(
+        "This account was created with Google Sign-In and does not have a password set. Please use 'Set Password' instead."
+      );
+    }
+
+    const isMatch = await bcrypt.compare(currentPassword, user.passwordHash);
+    if (!isMatch) {
+      throw new UnauthorizedError("Current password is incorrect");
+    }
+
+    const salt = await bcrypt.genSalt(10);
+    user.passwordHash = await bcrypt.hash(newPassword, salt);
+    await user.save();
+
+    return {
+      message: "Password has been changed successfully.",
     };
   }
 

@@ -17,3 +17,4 @@ authRouter.post("/forgot-password", authOtpRateLimiter, (req, res, next) => auth
 authRouter.post("/reset-password", (req, res, next) => authController.resetPassword(req, res, next));
 authRouter.post("/reset-password-otp", (req, res, next) => authController.resetPasswordWithOtp(req, res, next));
 authRouter.post("/set-password", authMiddleware, (req, res, next) => authController.setPassword(req, res, next));
+authRouter.post("/change-password", authMiddleware, authOtpRateLimiter, (req, res, next) => authController.changePassword(req, res, next));

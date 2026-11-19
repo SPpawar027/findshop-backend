@@ -220,6 +220,25 @@ export class AuthController {
     }
   }
 
+  async changePassword(req: AuthenticatedRequest, res: Response, next: NextFunction): Promise<void> {
+    try {
+      if (!req.user) {
+        throw new BadRequestError("User authentication context missing");
+      }
+      const { currentPassword, newPassword } = req.body;
+      if (!currentPassword) {
+        throw new BadRequestError("Current password is required");
+      }
+      if (!newPassword) {
+        throw new BadRequestError("New password is required");
+      }
+      const result = await authService.changePassword(req.user.id, currentPassword, newPassword);
+      sendSuccess(res, result, result.message);
+    } catch (error) {
+      next(error);
+    }
+  }
+
   async setPassword(req: AuthenticatedRequest, res: Response, next: NextFunction): Promise<void> {
     try {
       if (!req.user) {
